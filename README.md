@@ -132,8 +132,8 @@ cd va_api_gateway_golang
 # Install dependencies
 go mod download
 
-# Run locally
-go run main.go
+# Run locally (use '.' so all package files are compiled)
+go run .
 
 # Or build and run
 go build -o gateway .

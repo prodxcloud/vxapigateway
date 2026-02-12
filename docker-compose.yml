@@ -1,24 +1,42 @@
 version: '3.8'
 
 services:
-  # API Gateway
+  # API Gateway (Go)
   gateway:
     build: .
-    container_name: va_api_gateway
+    container_name: va_api_gateway_go
     ports:
       - "8080:8080"
     environment:
+      - GATEWAY_PORT=:8080
       - JWT_SECRET=${JWT_SECRET:-your-secret-key-change-in-production}
-      - MAX_RPS=100
+      - MAX_REQUESTS_PER_SECOND=100
+      - MAX_BURST_SIZE=200
       - DDOS_THRESHOLD=1000
       - REDIS_ADDR=redis:6379
       - LOAD_BALANCING_ALGO=least-conn
+      - ENABLE_CACHING=${ENABLE_CACHING:-true}
+      - CACHE_TTL=5m
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
+      # Service Routes
+      - ROUTE_INFINITY_URL=http://infinity-ai:8000
+      - ROUTE_INFINITY_PREFIX=/api/infinity
+      - ROUTE_LLM_URL=http://va-llm:8745
+      - ROUTE_LLM_PREFIX=/api/llm
+      - ROUTE_STUDIO_URL=http://va-studio:8000
+      - ROUTE_STUDIO_PREFIX=/api/studio
+      - ROUTE_ADMIN_URL=http://va-admin:8742
+      - ROUTE_ADMIN_PREFIX=/api/admin
     depends_on:
-      - redis
-      - jaeger
-      - prometheus
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+      prometheus:
+        condition: service_started
     networks:
       - gateway_network
+      - va-services
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
@@ -99,40 +117,12 @@ services:
       - gateway_network
     restart: unless-stopped
 
-  # Backend Services (Mock for testing)
-  agent-api:
-    image: python:3.11-slim
-    container_name: va_agent_api
-    ports:
-      - "8001:8001"
-    command: python -m http.server 8001
-    networks:
-      - gateway_network
-    restart: unless-stopped
-
-  model-api:
-    image: python:3.11-slim
-    container_name: va_model_api
-    ports:
-      - "8002:8002"
-    command: python -m http.server 8002
-    networks:
-      - gateway_network
-    restart: unless-stopped
-
-  crud-api:
-    image: python:3.11-slim
-    container_name: va_crud_api
-    ports:
-      - "8003:8003"
-    command: python -m http.server 8003
-    networks:
-      - gateway_network
-    restart: unless-stopped
-
 networks:
   gateway_network:
     driver: bridge
+  va-services:
+    external: true
+    name: va-services
 
 volumes:
   redis_data:
