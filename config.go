@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"log"
 	"os"
 	"strconv"
 	"time"
@@ -61,7 +60,7 @@ func envOrInt(key string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("WARNING: invalid integer for %s=%q, using default %d", key, v, fallback)
+		logConfig().Warn("invalid integer env, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return n
@@ -77,7 +76,7 @@ func envOrBool(key string, fallback bool) bool {
 	}
 	b, err := strconv.ParseBool(v)
 	if err != nil {
-		log.Printf("WARNING: invalid boolean for %s=%q, using default %v", key, v, fallback)
+		logConfig().Warn("invalid boolean env, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return b
@@ -93,7 +92,7 @@ func envOrDuration(key string, fallback time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Printf("WARNING: invalid duration for %s=%q, using default %v", key, v, fallback)
+		logConfig().Warn("invalid duration env, using default", "key", key, "value", v, "default", fallback)
 		return fallback
 	}
 	return d
@@ -108,7 +107,7 @@ func loadServiceRoutes() []ServiceRoute {
 	if raw := os.Getenv("SERVICE_ROUTES"); raw != "" {
 		var routes []ServiceRoute
 		if err := json.Unmarshal([]byte(raw), &routes); err != nil {
-			log.Printf("WARNING: failed to parse SERVICE_ROUTES JSON: %v, falling back to individual vars", err)
+			logConfig().Warn("failed to parse SERVICE_ROUTES JSON, falling back to individual vars", "error", err)
 		} else if len(routes) > 0 {
 			return routes
 		}
@@ -125,8 +124,8 @@ func loadServiceRoutes() []ServiceRoute {
 	defs := []routeDef{
 		{"ROUTE_INFINITY_PREFIX", "ROUTE_INFINITY_URL", "/api/infinity", "http://localhost:8000"},
 		{"ROUTE_LLM_PREFIX", "ROUTE_LLM_URL", "/api/llm", "http://localhost:8745"},
-		{"ROUTE_STUDIO_PREFIX", "ROUTE_STUDIO_URL", "/api/studio", "http://localhost:8000"},
-		{"ROUTE_ADMIN_PREFIX", "ROUTE_ADMIN_URL", "/api/admin", "http://localhost:8742"},
+		{"ROUTE_STUDIO_PREFIX", "ROUTE_STUDIO_URL", "/api/studio", "http://localhost:3000"},
+		{"ROUTE_ADMIN_PREFIX", "ROUTE_ADMIN_URL", "/api/admin", "http://localhost:8741"},
 	}
 
 	var routes []ServiceRoute
@@ -162,7 +161,7 @@ func loadCorsOrigins() []string {
 	if raw := os.Getenv("CORS_ALLOWED_ORIGINS"); raw != "" {
 		var origins []string
 		if err := json.Unmarshal([]byte(raw), &origins); err != nil {
-			log.Printf("WARNING: failed to parse CORS_ALLOWED_ORIGINS: %v, using default [\"*\"]", err)
+			logConfig().Warn("failed to parse CORS_ALLOWED_ORIGINS, using default", "error", err)
 			return []string{"*"}
 		}
 		return origins

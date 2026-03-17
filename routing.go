@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"crypto/tls"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -213,8 +212,11 @@ func (s *ServicePool) HealthCheck() {
 		if !alive {
 			status = "down"
 		}
-		log.Printf("Health check: %s [%s] (connections: %d)",
-			backend.URL, status, backend.GetConnections())
+		logRouter().Info("health check",
+			"backend", backend.URL.String(),
+			"status", status,
+			"connections", backend.GetConnections(),
+		)
 	}
 }
 
@@ -271,7 +273,7 @@ func (sr *ServiceRouter) AddRoute(cfg ServiceRoute, algo string, transportCfg Co
 
 	targetURL, err := url.Parse(cfg.TargetURL)
 	if err != nil {
-		log.Printf("WARNING: invalid target URL %q for prefix %s: %v", cfg.TargetURL, cfg.Prefix, err)
+		logRouter().Warn("invalid target URL, route skipped", "prefix", cfg.Prefix, "target_url", cfg.TargetURL, "error", err)
 		return
 	}
 
@@ -286,7 +288,8 @@ func (sr *ServiceRouter) AddRoute(cfg ServiceRoute, algo string, transportCfg Co
 		DisableCompression: !transportCfg.EnableCompression,
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, proxyErr error) {
-		log.Printf("Proxy error for %s: %v", targetURL, proxyErr)
+		reqID := r.Header.Get("x-request-id")
+		logProxy().Error("proxy error", "backend", targetURL.String(), "error", proxyErr, "req", reqID)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 	}
 
@@ -322,8 +325,14 @@ func (sr *ServiceRouter) AddRoute(cfg ServiceRoute, algo string, transportCfg Co
 	})
 	sr.mu.Unlock()
 
-	log.Printf("Route registered: %s -> %s (strip=%v, auth=%v, weight=%d, timeout=%v)",
-		cfg.Prefix, cfg.TargetURL, cfg.StripPrefix, cfg.RequireAuth, weight, timeout)
+	logRouter().Info("route registered",
+		"prefix", cfg.Prefix,
+		"target", cfg.TargetURL,
+		"strip_prefix", cfg.StripPrefix,
+		"require_auth", cfg.RequireAuth,
+		"weight", weight,
+		"timeout", timeout,
+	)
 }
 
 // Route performs longest-prefix matching on the given path and returns a

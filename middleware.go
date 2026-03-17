@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -171,7 +170,7 @@ func (d *DDoSProtection) RecordRequest(ip string) bool {
 	counter.Count++
 	if counter.Count > d.threshold {
 		d.blocked[ip] = now.Add(d.duration)
-		log.Printf("DDoS: Blocked IP %s for %v (requests: %d)", ip, d.duration, counter.Count)
+		logDDoS().Warn("IP blocked by DDoS protection", "ip", ip, "block_duration", d.duration, "request_count", counter.Count, "threshold", d.threshold)
 		blockedIPsTotal.Inc()
 		return true
 	}
@@ -234,7 +233,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 		if time.Since(cb.lastFailTime) > cb.resetTimeout {
 			cb.state = "half-open"
 			cb.failures = 0
-			log.Printf("Circuit breaker: half-open")
+			logCircuit().Info("circuit breaker transition", "state", "half-open")
 		} else {
 			return fmt.Errorf("circuit breaker is open")
 		}
@@ -246,7 +245,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 		cb.lastFailTime = time.Now()
 		if cb.failures >= cb.maxFailures {
 			cb.state = "open"
-			log.Printf("Circuit breaker: opened (failures: %d)", cb.failures)
+			logCircuit().Warn("circuit breaker opened", "failures", cb.failures, "max_failures", cb.maxFailures)
 			circuitBreakerTrips.Inc()
 		}
 		return err
@@ -254,7 +253,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 
 	if cb.state == "half-open" {
 		cb.state = "closed"
-		log.Printf("Circuit breaker: closed")
+		logCircuit().Info("circuit breaker transition", "state", "closed")
 	}
 	cb.failures = 0
 	return nil

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -42,11 +41,11 @@ func NewCacheManager(redisAddr string, ttl time.Duration, enable bool) *CacheMan
 
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Printf("WARNING: Redis connection failed: %v (caching disabled)", err)
+		logCache().Warn("Redis connection failed, caching disabled", "addr", redisAddr, "error", err)
 		return &CacheManager{enable: false}
 	}
 
-	log.Printf("Redis connected: %s", redisAddr)
+	logCache().Info("Redis connected", "addr", redisAddr)
 	return &CacheManager{
 		redis:  rdb,
 		ctx:    ctx,
@@ -66,7 +65,7 @@ func (cm *CacheManager) Get(key string) (string, bool) {
 	if err == redis.Nil {
 		return "", false
 	} else if err != nil {
-		log.Printf("Cache get error: %v", err)
+		logCache().Error("cache get error", "key", key, "error", err)
 		return "", false
 	}
 
@@ -82,7 +81,7 @@ func (cm *CacheManager) Set(key string, value string) {
 
 	err := cm.redis.Set(cm.ctx, key, value, cm.ttl).Err()
 	if err != nil {
-		log.Printf("Cache set error: %v", err)
+		logCache().Error("cache set error", "key", key, "error", err)
 	}
 }
 
@@ -231,7 +230,7 @@ func whitelistHandler(gw *Gateway) http.HandlerFunc {
 		}
 
 		gw.ddosProtection.AddToWhitelist(ip)
-		log.Printf("IP %s added to whitelist", ip)
+		logAdmin().Info("IP added to whitelist", "ip", ip)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "whitelisted", "ip": ip})
@@ -254,7 +253,7 @@ func blacklistHandler(gw *Gateway) http.HandlerFunc {
 		}
 
 		gw.ddosProtection.AddToBlacklist(ip)
-		log.Printf("IP %s added to blacklist", ip)
+		logAdmin().Info("IP added to blacklist", "ip", ip)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "blacklisted", "ip": ip})

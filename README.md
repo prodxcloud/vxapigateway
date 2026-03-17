@@ -246,6 +246,7 @@ export MAX_RPS=1000
 export DDOS_THRESHOLD=5000
 export REDIS_ADDR="redis:6379"
 export LOAD_BALANCING_ALGO="least-conn"
+export LOG_LEVEL="info"   # debug | info | warn | error
 ```
 
 ## API Endpoints

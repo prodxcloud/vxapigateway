@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -39,9 +38,9 @@ func NewGateway(cfg Config) *Gateway {
 
 	tracer, tracerCloser, err := initTracer("api-gateway")
 	if err != nil {
-		log.Printf("WARNING: Jaeger tracer init failed: %v (tracing disabled)", err)
+		logTracer().Warn("Jaeger tracer init failed, tracing disabled", "error", err)
 	} else {
-		log.Printf("Jaeger tracer initialized")
+		logTracer().Info("Jaeger tracer initialized", "service", "api-gateway")
 	}
 
 	gw := &Gateway{
@@ -75,6 +74,11 @@ func (g *Gateway) Close() {
 // through the circuit breaker with retry logic.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	requestID := r.Header.Get("x-request-id")
+	reqLog := logGateway().WithRequestID(requestID)
+	ip := getClientIP(r)
+
+	reqLog.Debug("request started", "method", r.Method, "path", r.URL.Path, "client_ip", ip)
 
 	// Start tracing span
 	var span opentracing.Span
@@ -90,11 +94,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		requestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration)
 	}()
 
-	// Get client IP
-	ip := getClientIP(r)
-
 	// DDoS Protection
 	if g.ddosProtection.IsBlocked(ip) {
+		reqLog.Warn("request rejected", "reason", "IP blocked", "client_ip", ip, "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "Too many requests - IP blocked", http.StatusTooManyRequests)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "429").Inc()
 		if span != nil {
@@ -105,6 +107,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if g.ddosProtection.RecordRequest(ip) {
+		reqLog.Warn("request rejected", "reason", "DDoS protection triggered", "client_ip", ip, "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "DDoS protection triggered", http.StatusTooManyRequests)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "429").Inc()
 		if span != nil {
@@ -117,6 +120,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Rate Limiting
 	limiter := g.rateLimiter.GetLimiter(ip)
 	if !limiter.Allow() {
+		reqLog.Warn("request rejected", "reason", "rate limit exceeded", "client_ip", ip, "method", r.Method, "path", r.URL.Path)
 		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "429").Inc()
 		if span != nil {
@@ -129,7 +133,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Route matching
 	matched := g.router.Route(r.URL.Path)
 	if matched == nil {
-		// No route matched -- fall through to default backend pool if any
+		reqLog.Info("request rejected", "reason", "no route matched", "path", r.URL.Path, "method", r.Method)
 		http.Error(w, "No route matched", http.StatusNotFound)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "404").Inc()
 		return
@@ -160,6 +164,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Public endpoints bypass auth; otherwise route-level auth is checked
 	if requireAuth && !isPublicEndpoint(r.URL.Path) && !authenticated {
+		reqLog.Warn("request rejected", "reason", "unauthorized", "path", r.URL.Path, "method", r.Method)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "401").Inc()
 		if span != nil {
@@ -183,6 +188,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" && g.cfg.EnableCaching {
 		cacheKey := g.cacheManager.GenerateKey(r)
 		if cached, found := g.cacheManager.Get(cacheKey); found {
+			reqLog.Info("request served from cache", "path", r.URL.Path, "method", r.Method, "cache", "HIT")
 			w.Header().Set("X-Cache", "HIT")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(cached))
@@ -192,12 +198,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		reqLog.Debug("cache miss", "path", r.URL.Path, "key", cacheKey)
 		w.Header().Set("X-Cache", "MISS")
 	}
 
 	// Get backend from matched route pool
 	backend := matched.Pool.NextPeer(ip)
 	if backend == nil {
+		reqLog.Error("no healthy backends available", "path", r.URL.Path, "method", r.Method)
 		http.Error(w, "No healthy backends available", http.StatusServiceUnavailable)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "503").Inc()
 		if span != nil {
@@ -207,6 +215,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reqLog.Debug("backend selected", "backend", backend.URL.String(), "path", r.URL.Path)
 	if span != nil {
 		span.SetTag("backend", backend.URL.String())
 	}
@@ -246,17 +255,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if err == nil {
+			durationMs := time.Since(start).Milliseconds()
+			reqLog.Info("request completed", "method", r.Method, "path", r.URL.Path, "backend", backend.URL.String(), "status", 200, "duration_ms", durationMs)
 			requestsTotal.WithLabelValues(r.Method, r.URL.Path, "200").Inc()
 			return
 		}
 
 		lastErr = err
 		backend.RecordFailure()
+		reqLog.Warn("backend attempt failed", "attempt", attempt+1, "max_retries", maxRetries, "backend", backend.URL.String(), "error", err)
 
 		if attempt < maxRetries-1 {
 			backoff := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 			time.Sleep(backoff)
-
 			backend = matched.Pool.NextPeer(ip)
 			if backend == nil {
 				break
@@ -264,6 +275,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	durationMs := time.Since(start).Milliseconds()
+	reqLog.Error("request failed after retries", "method", r.Method, "path", r.URL.Path, "duration_ms", durationMs, "error", lastErr)
 	http.Error(w, fmt.Sprintf("Service temporarily unavailable: %v", lastErr), http.StatusServiceUnavailable)
 	requestsTotal.WithLabelValues(r.Method, r.URL.Path, "503").Inc()
 	if span != nil {
@@ -278,27 +291,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	cfg := LoadConfig()
+	log := logGateway()
 
-	log.Printf("Starting VA API Gateway v2.0.0")
-	log.Printf("Configuration:")
-	log.Printf("   Port: %s", cfg.Port)
-	log.Printf("   Load Balancing: %s", cfg.LoadBalancingAlgo)
-	log.Printf("   Rate Limit: %d req/s (burst: %d)", cfg.MaxRequestsPerSecond, cfg.MaxBurstSize)
-	log.Printf("   DDoS Threshold: %d req/min", cfg.DDoSThreshold)
-	log.Printf("   Compression: %v", cfg.EnableCompression)
-	log.Printf("   Caching: %v", cfg.EnableCaching)
+	log.Info("starting VA API Gateway", "version", "2.0.0")
+	log.Info("configuration loaded",
+		"port", cfg.Port,
+		"load_balancing", cfg.LoadBalancingAlgo,
+		"rate_limit_rps", cfg.MaxRequestsPerSecond,
+		"burst_size", cfg.MaxBurstSize,
+		"ddos_threshold", cfg.DDoSThreshold,
+		"compression", cfg.EnableCompression,
+		"caching", cfg.EnableCaching,
+	)
 
 	gateway := NewGateway(cfg)
 	defer gateway.Close()
-
-	// Log registered routes
-	log.Printf("Registered routes:")
-	for _, entry := range gateway.router.Routes() {
-		for _, b := range entry.Pool.Backends() {
-			log.Printf("   %s -> %s (strip=%v, auth=%v, timeout=%v)",
-				entry.Prefix, b.URL, entry.StripPrefix, entry.RequireAuth, entry.Timeout)
-		}
-	}
 
 	// Health check scheduler
 	go func() {
@@ -364,33 +371,34 @@ func main() {
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("All systems ready!")
-		log.Printf("Gateway listening on http://localhost%s", cfg.Port)
-		log.Println("------------------------------------------------------------")
-		log.Println("Features enabled:")
-		log.Println("  - DDoS Protection (connection + request rate limiting)")
-		log.Println("  - Load Balancing (round-robin, least-conn, ip-hash, weighted)")
-		log.Println("  - Security (JWT + API key validation, IP filtering)")
-		log.Println("  - Performance (caching, compression, connection pooling)")
-		log.Println("  - Observability (Prometheus metrics, Jaeger tracing)")
-		log.Println("  - Reliability (circuit breaker, retry with backoff)")
-		log.Println("  - Middleware (security headers, request ID)")
-		log.Println("------------------------------------------------------------")
+		log.Info("all systems ready", "listen", "http://localhost"+cfg.Port)
+		Banner([]string{
+			"Features enabled:",
+			"  - DDoS Protection (connection + request rate limiting)",
+			"  - Load Balancing (round-robin, least-conn, ip-hash, weighted)",
+			"  - Security (JWT + API key validation, IP filtering)",
+			"  - Performance (caching, compression, connection pooling)",
+			"  - Observability (Prometheus metrics, Jaeger tracing)",
+			"  - Reliability (circuit breaker, retry with backoff)",
+			"  - Middleware (security headers, request ID)",
+		})
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			log.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
 	<-done
-	log.Println("Shutting down gateway...")
+	log.Info("shutdown signal received, shutting down gateway")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Graceful shutdown failed: %v", err)
+		log.Error("graceful shutdown failed", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("Gateway stopped.")
+	log.Info("gateway stopped")
 }
