@@ -49,9 +49,9 @@ COPY config/ ./config/
 
 # ── nginx configuration ───────────────────────────────────────────────────────
 COPY nginx/nginx.conf /etc/nginx/nginx.conf
+COPY nginx/static/ /usr/share/nginx/html/
 RUN mkdir -p /var/log/nginx /var/cache/nginx /var/run/nginx \
-    && mkdir -p /app/logs \
-    && mkdir -p /usr/share/nginx/html
+    && mkdir -p /app/logs
 
 # ── Startup script ────────────────────────────────────────────────────────────
 # Starts nginx (daemon) then exec's the Go binary as PID 1 for signal handling
@@ -59,15 +59,15 @@ RUN printf '#!/bin/sh\nset -e\nnginx\nexec /app/gateway\n' \
     > /app/start.sh && chmod +x /app/start.sh
 
 # ── Environment ───────────────────────────────────────────────────────────────
-ENV GATEWAY_PORT=:8080
+ENV GATEWAY_PORT=:9777
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
 # 80    – nginx HTTP (public entry point, proxies to Go API)
-# 8080  – Go/Gin API (internal)
+# 9777  – Go API (internal)
 EXPOSE 80 9777
 
 # ── Healthcheck ───────────────────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:9777/health || exit 1
 
 CMD ["/app/start.sh"]

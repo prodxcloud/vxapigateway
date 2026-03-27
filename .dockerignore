@@ -27,8 +27,8 @@ va_api_gateway_golang
 README.md
 LICENSE
 *.md
-*.exe
-# Environment files
+
+# Environment files (passed via docker-compose)
 .env
 .env.*
 
@@ -52,4 +52,3 @@ Dockerfile
 # Misc
 .DS_Store
 Thumbs.db
-*.md
