@@ -122,10 +122,15 @@ func loadServiceRoutes() []ServiceRoute {
 	}
 
 	defs := []routeDef{
-		{"ROUTE_INFINITY_PREFIX", "ROUTE_INFINITY_URL", "/api/infinity", "http://localhost:8000"},
-		{"ROUTE_LLM_PREFIX", "ROUTE_LLM_URL", "/api/llm", "http://localhost:8745"},
 		{"ROUTE_STUDIO_PREFIX", "ROUTE_STUDIO_URL", "/api/studio", "http://localhost:3000"},
-		{"ROUTE_ADMIN_PREFIX", "ROUTE_ADMIN_URL", "/api/admin", "http://localhost:8741"},
+		{"ROUTE_STUDIO2_PREFIX", "ROUTE_STUDIO2_URL", "/api/studio2", "http://localhost:3001"},
+		{"ROUTE_AI_PREFIX", "ROUTE_AI_URL", "/api/ai", "http://localhost:8741"},
+		{"ROUTE_ADMIN_PREFIX", "ROUTE_ADMIN_URL", "/api/admin", "http://localhost:8242"},
+		{"ROUTE_CORE_PREFIX", "ROUTE_CORE_URL", "/api/core", "http://localhost:8743"},
+		{"ROUTE_NODE_PREFIX", "ROUTE_NODE_URL", "/api/node", "http://localhost:8744"},
+		{"ROUTE_LLM_PREFIX", "ROUTE_LLM_URL", "/api/llm", "http://localhost:8745"},
+		{"ROUTE_LLM2_PREFIX", "ROUTE_LLM2_URL", "/api/llm2", "http://localhost:8746"},
+		{"ROUTE_AGENT_PREFIX", "ROUTE_AGENT_URL", "/api/agent", "http://localhost:8788"},
 	}
 
 	var routes []ServiceRoute
@@ -173,7 +178,7 @@ func loadCorsOrigins() []string {
 // fully populated Config struct.
 func LoadConfig() Config {
 	return Config{
-		Port:                  envOr("GATEWAY_PORT", ":8080"),
+		Port:                  envOr("GATEWAY_PORT", ":9777"),
 		MaxRequestsPerSecond:  envOrInt("MAX_REQUESTS_PER_SECOND", 100),
 		MaxBurstSize:          envOrInt("MAX_BURST_SIZE", 200),
 		DDoSThreshold:         envOrInt("DDOS_THRESHOLD", 1000),

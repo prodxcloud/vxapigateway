@@ -11,10 +11,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
 )
+
+func init() {
+	// Load .env file if present (non-fatal if missing)
+	_ = godotenv.Load()
+}
 
 // ============= GATEWAY =============
 
