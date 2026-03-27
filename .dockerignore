@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+.github
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+gateway
+va_api_gateway_golang
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*.test
+*.out
+
+# Documentation
+README.md
+LICENSE
+*.md
+*.exe
+# Environment files
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# Dependencies (will be downloaded during build)
+vendor/
+
+# Scripts
+scripts/
+
+# Kubernetes
+k8s/
+
+# Docker
+docker-compose.yml
+Dockerfile
+
+# Misc
+.DS_Store
+Thumbs.db
+*.md

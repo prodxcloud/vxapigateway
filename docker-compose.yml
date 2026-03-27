@@ -3,20 +3,29 @@ version: '3.8'
 services:
   # API Gateway (Go)
   gateway:
-    build: .
     container_name: va_api_gateway_go
-    ports:
-      - "8080:8080"
+    image: valtunox/api-gateway:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+
     environment:
-      - GATEWAY_PORT=:8080
+      # Framework
+      - GATEWAY_PORT=:9777
       - JWT_SECRET=${JWT_SECRET:-your-secret-key-change-in-production}
+      # Rate Limiting & DDoS Protection
       - MAX_REQUESTS_PER_SECOND=100
       - MAX_BURST_SIZE=200
       - DDOS_THRESHOLD=1000
+      # Redis
       - REDIS_ADDR=redis:6379
+      # Load Balancing
       - LOAD_BALANCING_ALGO=least-conn
+      # Caching
       - ENABLE_CACHING=${ENABLE_CACHING:-true}
       - CACHE_TTL=5m
+      # CORS
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
       # Service Routes
       - ROUTE_INFINITY_URL=http://infinity-ai:8000
@@ -27,6 +36,31 @@ services:
       - ROUTE_STUDIO_PREFIX=/api/studio
       - ROUTE_ADMIN_URL=http://va-admin:8742
       - ROUTE_ADMIN_PREFIX=/api/admin
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    ports:
+      - "80:80"           # nginx HTTP — public entry point
+      - "9777:9777"       # Go/Gin API  — direct access (optional)
+
+    volumes:
+      - type: bind
+        source: ./nginx/nginx.conf
+        target: /etc/nginx/nginx.conf
+        read_only: true
+      - type: bind
+        source: ./nginx/static
+        target: /usr/share/nginx/html
+        consistency: cached
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
     depends_on:
       redis:
         condition: service_healthy
@@ -34,15 +68,22 @@ services:
         condition: service_started
       prometheus:
         condition: service_started
+
     networks:
       - gateway_network
       - va-services
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
+
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
 
   # Redis for caching and rate limiting
   redis:

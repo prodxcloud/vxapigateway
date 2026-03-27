@@ -1,37 +1,73 @@
-# Build stage
+# =============================================================================
+# API Gateway — Production Container
+# Ports  : 80 (nginx → reverse proxy) | 8080 (Go/Gin API)
+#
+# Build strategy (multi-stage):
+#   builder  — compiles the Go binary; nothing else is shipped
+#   runtime  — slim alpine with nginx for reverse proxy
+# =============================================================================
+
+# ── Stage 1: Compile ─────────────────────────────────────────────────────────
 FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache git gcc musl-dev ca-certificates
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apk add --no-cache git
-
-# Copy go mod files
+# Download dependencies first (cache-friendly layer)
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source and compile a static binary
 COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /app/gateway .
 
-# Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o gateway .
-
-# Final stage
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+LABEL maintainer="valtunox"
+LABEL org.opencontainers.image.title="va-api-gateway"
+LABEL org.opencontainers.image.description="API Gateway with nginx reverse proxy"
 
-WORKDIR /root/
+# System utilities: nginx for reverse proxy
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    curl \
+    nginx \
+    wget
 
-# Copy the binary from builder
-COPY --from=builder /app/gateway .
+WORKDIR /app
 
-# Expose port
-EXPOSE 8080
+# ── Compiled binary from builder ──────────────────────────────────────────────
+COPY --from=builder /app/gateway /app/gateway
+RUN chmod +x /app/gateway
 
-# Health check
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+# ── Runtime assets ────────────────────────────────────────────────────────────
+COPY config/ ./config/
 
-# Run the gateway
-CMD ["./gateway"]
+# ── nginx configuration ───────────────────────────────────────────────────────
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
+RUN mkdir -p /var/log/nginx /var/cache/nginx /var/run/nginx \
+    && mkdir -p /app/logs \
+    && mkdir -p /usr/share/nginx/html
+
+# ── Startup script ────────────────────────────────────────────────────────────
+# Starts nginx (daemon) then exec's the Go binary as PID 1 for signal handling
+RUN printf '#!/bin/sh\nset -e\nnginx\nexec /app/gateway\n' \
+    > /app/start.sh && chmod +x /app/start.sh
+
+# ── Environment ───────────────────────────────────────────────────────────────
+ENV GATEWAY_PORT=:8080
+
+# ── Ports ─────────────────────────────────────────────────────────────────────
+# 80    – nginx HTTP (public entry point, proxies to Go API)
+# 8080  – Go/Gin API (internal)
+EXPOSE 80 9777
+
+# ── Healthcheck ───────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["/app/start.sh"]

@@ -15,22 +15,23 @@ A high-performance, production-ready API Gateway built in Go with comprehensive 
                     +--------+---------+
                              |
                     +--------v----------------------------+
-                    |   Layer 7 Load Balancer             |
+                    |   nginx Reverse Proxy (Port 80)     |
                     |   - SSL/TLS Termination             |
-                    |   - DDoS Protection (Rate limit)    |
-                    |   - IP Blacklisting/Whitelisting    |
-                    |   - Connection rate limiting        |
-                    |   - Request queuing                 |
+                    |   - Rate Limiting (100r/s)          |
+                    |   - DDoS Protection (1000r/s)       |
+                    |   - Static File Serving             |
+                    |   - Security Headers                |
+                    |   - Gzip Compression                |
                     +--------+----------------------------+
                              |
                     +--------v----------------------------+
-                    |   API Gateway (Multiple instances)  |
+                    |   API Gateway (Port 8080)           |
                     |   - JWT Authentication              |
                     |   - API Key validation              |
                     |   - Redis caching                   |
-                    |   - Request compression             |
                     |   - Circuit breaker                 |
                     |   - Retry with backoff              |
+                    |   - Load Balancing (4 algorithms)   |
                     +--------+----------------------------+
                              |
                     +--------v----------------------------+
@@ -97,6 +98,7 @@ make load-test
 
 | Service    | URL                          |
 |------------|------------------------------|
+| nginx      | http://localhost:80           |
 | Gateway    | http://localhost:8080         |
 | Metrics    | http://localhost:8080/metrics |
 | Prometheus | http://localhost:9090         |
@@ -105,6 +107,21 @@ make load-test
 | Redis      | localhost:6379               |
 
 ## Features
+
+### 0. nginx Reverse Proxy
+
+**Implementation:** Multi-stage Dockerfile with nginx integration
+
+- nginx as front-facing reverse proxy on port 80
+- Rate limiting zones (100 req/s for API, 1000 req/s for DDoS protection)
+- Static file serving with 30-day cache expiration
+- Security headers (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection)
+- Gzip compression for text-based responses
+- Custom error pages (404, 50x)
+- Health check endpoint without logging
+- Upstream load balancing with least_conn algorithm
+- Request buffering and timeout configuration
+- Proxy headers for real IP forwarding
 
 ### 1. DDoS Protection
 
@@ -436,10 +453,17 @@ va_api_gateway_golang/
 ├── go.mod                  # Dependencies
 ├── go.sum                  # Dependency lock
 ├── Makefile               # Build automation
-├── Dockerfile             # Production container
-├── docker-compose.yml     # Full stack (gateway + Redis + Prometheus + Grafana + Jaeger)
+├── Dockerfile             # Multi-stage production container with nginx
+├── .dockerignore          # Docker build exclusions
+├── docker-compose.yml     # Full stack with nginx reverse proxy
 ├── .env.development       # Dev environment
 ├── .env.production        # Prod environment
+├── nginx/
+│   ├── nginx.conf         # nginx reverse proxy configuration
+│   └── static/            # Static files
+│       ├── index.html     # Landing page
+│       ├── 404.html       # Custom 404 page
+│       └── 50x.html       # Custom error page
 ├── config/
 │   └── prometheus.yml     # Metrics scraping config
 ├── k8s/
