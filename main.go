@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -83,6 +84,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	requestID := r.Header.Get("x-request-id")
 	reqLog := logGateway().WithRequestID(requestID)
 	ip := getClientIP(r)
+
+	// Track for live dashboard
+	dashStats.RecordRequest()
+	atomic.AddInt64(&dashStats.TotalRequests, 0) // already done in RecordRequest
 
 	reqLog.Debug("request started", "method", r.Method, "path", r.URL.Path, "client_ip", ip)
 
@@ -246,7 +251,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			defer backend.DecConnections()
 
 			activeConnections.Inc()
+			atomic.AddInt64(&dashStats.ActiveConns, 1)
 			defer activeConnections.Dec()
+			defer atomic.AddInt64(&dashStats.ActiveConns, -1)
 
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
@@ -355,6 +362,10 @@ func main() {
 		w.Write([]byte(`{"message":"login endpoint - implement OAuth2/OIDC flow"}`))
 	})
 
+	// System Monitor endpoint
+	mux.HandleFunc("/monitor", systemMonitorHandler)
+	mux.HandleFunc("/api/system-metrics", systemMonitorHandler)
+
 	// Main gateway handler -- catch-all
 	mux.Handle("/", gateway)
 
@@ -378,16 +389,14 @@ func main() {
 
 	go func() {
 		log.Info("all systems ready", "listen", "http://localhost"+cfg.Port)
-		Banner([]string{
-			"Features enabled:",
-			"  - DDoS Protection (connection + request rate limiting)",
-			"  - Load Balancing (round-robin, least-conn, ip-hash, weighted)",
-			"  - Security (JWT + API key validation, IP filtering)",
-			"  - Performance (caching, compression, connection pooling)",
-			"  - Observability (Prometheus metrics, Jaeger tracing)",
-			"  - Reliability (circuit breaker, retry with backoff)",
-			"  - Middleware (security headers, request ID)",
-		})
+
+		// ── Startup banner (always printed, even in Docker) ──────────────────
+		PrintStartupBanner(cfg, "2.0.0")
+
+		// ── Live dashboard (TTY only) ────────────────────────────────────────
+		dash := NewLiveDashboard(gateway, cfg, "2.0.0")
+		dash.Start(time.Second)
+		defer dash.Stop()
 
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Error("server error", "error", err)

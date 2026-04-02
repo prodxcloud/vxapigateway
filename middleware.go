@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -172,6 +173,7 @@ func (d *DDoSProtection) RecordRequest(ip string) bool {
 		d.blocked[ip] = now.Add(d.duration)
 		logDDoS().Warn("IP blocked by DDoS protection", "ip", ip, "block_duration", d.duration, "request_count", counter.Count, "threshold", d.threshold)
 		blockedIPsTotal.Inc()
+		atomic.AddInt64(&dashStats.BlockedIPs, 1)
 		return true
 	}
 
@@ -247,6 +249,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 			cb.state = "open"
 			logCircuit().Warn("circuit breaker opened", "failures", cb.failures, "max_failures", cb.maxFailures)
 			circuitBreakerTrips.Inc()
+			atomic.AddInt64(&dashStats.CircuitTrips, 1)
 		}
 		return err
 	}
