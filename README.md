@@ -1,571 +1,689 @@
-# VA API Gateway - Production-Ready Go Implementation
+<div align="center">
 
-[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+# VA API Gateway
+
+**A high-performance API gateway built in Go with DDoS protection, load balancing, caching, and observability.**
+
+[![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/valtunox/va_api_gateway_golang/pulls)
 
-A high-performance, production-ready API Gateway built in Go with comprehensive DDoS protection, load balancing, security features, and observability. Enterprise-grade features comparable to Cloudflare, NGINX, and AWS API Gateway.
+[Quick Start](#quick-start) · [Features](#features) · [Configuration](#configuration) · [Deployment](#deployment) · [Contributing](#contributing)
+
+</div>
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Quick Start](#quick-start)
+- [Features](#features)
+  - [NGINX Reverse Proxy](#nginx-reverse-proxy)
+  - [DDoS Protection](#ddos-protection)
+  - [Load Balancing](#load-balancing)
+  - [Security](#security)
+  - [Caching & Performance](#caching--performance)
+  - [Observability](#observability)
+  - [Reliability](#reliability)
+  - [Live Dashboard](#live-dashboard)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Service Routes](#service-routes)
+- [API Reference](#api-reference)
+- [Deployment](#deployment)
+  - [Docker Compose](#docker-compose)
+  - [Kubernetes](#kubernetes)
+  - [Standalone Binary](#standalone-binary)
+- [Development](#development)
+- [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Overview
+
+VA API Gateway is a self-hosted, open-source API gateway written in Go. It sits between your clients and backend services, providing:
+
+- **Protection** — Per-IP rate limiting, DDoS detection with automatic blocking, IP whitelists/blacklists
+- **Routing** — Prefix-based routing with longest-match, path stripping, and per-route auth/timeout settings
+- **Load Balancing** — Four algorithms (round-robin, least-connections, IP-hash, weighted)
+- **Caching** — Redis-backed response caching with configurable TTL
+- **Observability** — Prometheus metrics, Jaeger distributed tracing, structured logging, live terminal dashboard
+- **Reliability** — Circuit breaker pattern, retry with exponential backoff, active health checks
+
+It is designed to be used with an NGINX reverse proxy layer for SSL termination, static file serving, and an additional rate-limiting tier.
 
 ## Architecture
 
 ```
-                    +------------------+
-                    |     Clients      |
-                    |  (Next.js/Web)   |
-                    +--------+---------+
-                             |
-                    +--------v----------------------------+
-                    |   nginx Reverse Proxy (Port 80)     |
-                    |   - SSL/TLS Termination             |
-                    |   - Rate Limiting (100r/s)          |
-                    |   - DDoS Protection (1000r/s)       |
-                    |   - Static File Serving             |
-                    |   - Security Headers                |
-                    |   - Gzip Compression                |
-                    +--------+----------------------------+
-                             |
-                    +--------v----------------------------+
-                    |   API Gateway (Port 8080)           |
-                    |   - JWT Authentication              |
-                    |   - API Key validation              |
-                    |   - Redis caching                   |
-                    |   - Circuit breaker                 |
-                    |   - Retry with backoff              |
-                    |   - Load Balancing (4 algorithms)   |
-                    +--------+----------------------------+
-                             |
-                    +--------v----------------------------+
-                    |   Service Mesh / Router             |
-                    |   - Health checking                 |
-                    |   - Service discovery               |
-                    |   - Load balancing algorithms       |
-                    |     * Round-robin                   |
-                    |     * Least connections             |
-                    |     * IP hash (sticky sessions)     |
-                    |     * Weighted routing              |
-                    +--------+----------------------------+
-                             |
-              +--------------+---------------+
-              |              |               |
-       +------v------+ +----v------+ +------v------+
-       | Python      | | Python    | | Python      |
-       | Agent API   | | Model API | | CRUD API    |
-       | (Port 8001) | | (Port 8002| | (Port 8003) |
-       +-------------+ +-----------+ +-------------+
-              |              |               |
-       +------v--------------v---------------v-----+
-       |   Shared Infrastructure                    |
-       |   - Redis (Cache/Rate limiting)            |
-       |   - PostgreSQL (Sessions/Metrics)          |
-       |   - Prometheus (Metrics)                   |
-       |   - Jaeger (Distributed tracing)           |
-       +--------------------------------------------+
+                    ┌──────────────────┐
+                    │     Clients      │
+                    └────────┬─────────┘
+                             │
+                    ┌────────▼───────────────────────┐
+                    │  NGINX Reverse Proxy (Port 80)  │
+                    │  • SSL/TLS termination          │
+                    │  • Rate limiting (100 r/s)      │
+                    │  • DDoS protection (1000 r/s)   │
+                    │  • Static file serving           │
+                    │  • Gzip compression              │
+                    │  • Security headers              │
+                    └────────┬───────────────────────┘
+                             │
+                    ┌────────▼───────────────────────┐
+                    │  Go API Gateway (Port 9777)     │
+                    │  • JWT / API key auth           │
+                    │  • Per-IP rate limiting          │
+                    │  • Redis response caching        │
+                    │  • Circuit breaker               │
+                    │  • Retry with backoff            │
+                    │  • Prefix-based routing          │
+                    │  • 4 load-balancing algorithms   │
+                    └────────┬───────────────────────┘
+                             │
+          ┌──────────────────┼──────────────────┐
+          │                  │                  │
+   ┌──────▼──────┐   ┌──────▼──────┐   ┌──────▼──────┐
+   │  Service A  │   │  Service B  │   │  Service C  │
+   │  /api/llm   │   │  /api/admin │   │  /api/studio│
+   └─────────────┘   └─────────────┘   └─────────────┘
+          │                  │                  │
+   ┌──────▼──────────────────▼──────────────────▼─────┐
+   │  Shared Infrastructure                           │
+   │  • Redis (cache & rate limiting)                 │
+   │  • Prometheus (metrics)                          │
+   │  • Jaeger (distributed tracing)                  │
+   │  • Grafana (dashboards)                          │
+   └──────────────────────────────────────────────────┘
 ```
+
+> Ports, service names, and route prefixes are fully configurable via environment variables. The diagram above shows the default Docker Compose setup.
 
 ## Quick Start
 
-### 60-Second Deploy
+### Prerequisites
+
+- **Go 1.23+** — [Install Go](https://go.dev/dl/)
+- **Docker & Docker Compose** (optional) — for containerised deployment
+- **Redis** (optional) — required only if caching is enabled
+
+### Run Locally
 
 ```bash
-# Clone and enter directory
 git clone https://github.com/valtunox/va_api_gateway_golang.git
 cd va_api_gateway_golang
 
-# Option 1: Local Development (fastest)
-make build && ./gateway
-
-# Option 2: Docker (recommended)
-make docker-up
-
-# Option 3: Kubernetes (production)
-make k8s-deploy
+# Build and run
+make build
+./gateway
 ```
 
-### Test It
+The gateway starts on **port 9777** by default (configurable via `GATEWAY_PORT`).
 
-```bash
-# Health check
-curl http://localhost:8080/health
-
-# With authentication
-curl -H "X-API-Key: demo-api-key-123" http://localhost:8080/api/test
-
-# Load test
-make load-test
-```
-
-### Monitor It
-
-| Service    | URL                          |
-|------------|------------------------------|
-| nginx      | http://localhost:80           |
-| Gateway    | http://localhost:8080         |
-| Metrics    | http://localhost:8080/metrics |
-| Prometheus | http://localhost:9090         |
-| Grafana    | http://localhost:3000 (admin/admin) |
-| Jaeger     | http://localhost:16686        |
-| Redis      | localhost:6379               |
-
-## Features
-
-### 0. nginx Reverse Proxy
-
-**Implementation:** Multi-stage Dockerfile with nginx integration
-
-- nginx as front-facing reverse proxy on port 80
-- Rate limiting zones (100 req/s for API, 1000 req/s for DDoS protection)
-- Static file serving with 30-day cache expiration
-- Security headers (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection)
-- Gzip compression for text-based responses
-- Custom error pages (404, 50x)
-- Health check endpoint without logging
-- Upstream load balancing with least_conn algorithm
-- Request buffering and timeout configuration
-- Proxy headers for real IP forwarding
-
-### 1. DDoS Protection
-
-**Implementation:** `DDoSProtection` struct in [main.go](main.go)
-
-- Connection rate limiting per IP
-- Request rate limiting (token bucket algorithm)
-- Automatic IP blocking after threshold breach
-- Temporary blocks (10 minutes default, configurable)
-- Permanent blacklist support
-- IP whitelist for trusted sources
-- Request counter with time windows
-- Automatic cleanup of old data
-- Prometheus metrics for blocked IPs
-
-### 2. Load Balancing
-
-**Implementation:** `ServicePool` struct with 4 algorithms in [main.go](main.go)
-
-| Algorithm   | Use Case                | Sticky Sessions | Performance |
-|-------------|-------------------------|-----------------|-------------|
-| Round-robin | Equal backends          | No              | Fastest     |
-| Least-conn  | Varying request times   | No              | Efficient   |
-| IP-hash     | Session persistence     | Yes             | Good        |
-| Weighted    | Priority backends       | No              | Flexible    |
-
-Additional features:
-- Active health checks (configurable interval)
-- Automatic failover to healthy backends
-- Connection tracking per backend
-- Backend failure counting
-- Health status metrics in Prometheus
-
-### 3. Security
-
-**Implementation:** `validateJWT()`, `validateAPIKey()` functions in [main.go](main.go)
-
-- JWT validation with HMAC signature verification and expiration checking
-- API key management with SHA256 hashing
-- IP whitelisting/blacklisting
-- Request signature verification (framework ready)
-- SQL injection prevention (header sanitization)
-- XSS protection headers
-- Secure headers (CORS, CSP, etc.)
-- Per-user authentication tracking
-- Public endpoint bypass for /health, /metrics, /login
-
-### 4. Performance
-
-**Implementation:** `CacheManager` struct and `makeGzipHandler()` in [main.go](main.go)
-
-- Response caching with Redis
-- Cache key generation per request
-- Cache hit/miss tracking
-- Connection pooling (100 idle connections default)
-- Request compression (gzip)
-- Keep-alive connections
-- Idle connection timeout (90s default)
-- Configurable cache TTL (5 minutes default)
-
-### 5. Observability
-
-**Implementation:** Prometheus metrics in `init()`, Jaeger in `initTracer()` in [main.go](main.go)
-
-Prometheus metrics:
-- `http_requests_total` - Counter by method, endpoint, status
-- `http_request_duration_seconds` - Histogram with default buckets
-- `active_connections` - Gauge of current connections
-- `backend_health_status` - Gauge per backend (1=healthy, 0=down)
-- `circuit_breaker_trips_total` - Counter of circuit breaker activations
-- `blocked_ips_total` - Counter of DDoS blocks
-- `cache_hits_total` - Counter of cache hits
-
-Tracing:
-- Distributed tracing with Jaeger
-- Span creation per request
-- Tag injection (method, path, user, backend, errors)
-- Error tracking in spans
-
-Logging:
-- Structured logging with timestamps
-- Backend health check logs
-- DDoS protection events
-- Circuit breaker state changes
-
-### 6. Reliability
-
-**Implementation:** `CircuitBreaker` struct in [main.go](main.go)
-
-- Circuit breaker pattern (5 failures = open, half-open for recovery testing)
-- Retry logic with exponential backoff (3 attempts max)
-- Timeout management (30s default, configurable)
-- Graceful degradation (fallback to next backend)
-- Health endpoints with detailed status
-- Automatic backend failover
-
-## Feature Comparison
-
-| Feature          | Cloudflare | NGINX Plus | AWS API Gateway | **VA Gateway** |
-|------------------|-----------|------------|-----------------|----------------|
-| DDoS Protection  | Yes       | Yes        | Yes             | Yes            |
-| Load Balancing   | Yes       | Yes        | Yes             | Yes (4 algorithms) |
-| JWT Validation   | Yes       | Yes        | Yes             | Yes            |
-| Circuit Breaker  | Yes       | Yes        | No              | Yes            |
-| Redis Caching    | Yes       | Yes        | No              | Yes            |
-| Prometheus       | No        | No         | No              | Yes            |
-| Open Source      | No        | No         | No              | Yes            |
-| Self-Hosted      | No        | Yes        | No              | Yes            |
-
-## Configuration
-
-All configurable via `Config` struct in [main.go](main.go) or environment variables:
-
-```go
-Port                  string        // ":8080"
-MaxRequestsPerSecond  int           // 100
-MaxBurstSize          int           // 200
-DDoSThreshold         int           // 1000 req/min
-BlockDuration         time.Duration // 10 minutes
-JWTSecret             string        // Change in production!
-HealthCheckInterval   time.Duration // 10 seconds
-ConnectionTimeout     time.Duration // 30 seconds
-MaxIdleConns          int           // 100
-IdleConnTimeout       time.Duration // 90 seconds
-CircuitBreakerMax     int           // 5 failures
-CircuitBreakerTimeout time.Duration // 30 seconds
-EnableCompression     bool          // true
-EnableCaching         bool          // true
-CacheTTL              time.Duration // 5 minutes
-RedisAddr             string        // "localhost:6379"
-LoadBalancingAlgo     string        // "least-conn"
-```
-
-### Environment Variables
-
-```bash
-export JWT_SECRET="your-production-secret"
-export MAX_RPS=1000
-export DDOS_THRESHOLD=5000
-export REDIS_ADDR="redis:6379"
-export LOAD_BALANCING_ALGO="least-conn"
-export LOG_LEVEL="info"   # debug | info | warn | error
-```
-
-## API Endpoints
-
-### Public Endpoints
-- `GET /health` - Health check with backend status
-- `GET /metrics` - Prometheus metrics
-- `POST /login` - Authentication endpoint
-- `POST /register` - User registration
-
-### Protected Endpoints
-
-All other endpoints require authentication via:
-
-**JWT Token:**
-```bash
-curl -H "Authorization: Bearer eyJhbGc..." \
-  http://localhost:8080/api/agents
-```
-
-**API Key:**
-```bash
-curl -H "X-API-Key: demo-api-key-123" \
-  http://localhost:8080/api/agents
-```
-
-### Admin Endpoints
-- `POST /admin/whitelist?ip=X.X.X.X` - Add IP to whitelist
-- `POST /admin/blacklist?ip=X.X.X.X` - Add IP to blacklist
-
-### Proxied Backend Services
-- `localhost:8001` - Python Agent API (weight: 3)
-- `localhost:8002` - Python Model API (weight: 2)
-- `localhost:8003` - Python CRUD API (weight: 1)
-
-## Deployment
-
-### 1. Docker Compose (Development)
+### Run with Docker Compose
 
 ```bash
 docker-compose up -d
+```
+
+This starts the gateway, Redis, Prometheus, Grafana, and Jaeger. The NGINX layer is available on port **80**, and the Go API is accessible directly on port **9777**.
+
+### Verify
+
+```bash
+# Health check
+curl http://localhost:9777/health | jq
+
+# Through NGINX
+curl http://localhost/health | jq
+
+# With API key authentication
+curl -H "X-API-Key: demo-api-key-123" http://localhost:9777/api/llm/v1/models
+```
+
+### Service URLs
+
+| Service    | URL                             | Notes                    |
+|------------|---------------------------------|--------------------------|
+| NGINX      | `http://localhost:80`           | Public entry point       |
+| Gateway    | `http://localhost:9777`         | Direct access            |
+| Health     | `http://localhost:9777/health`  | JSON health + backends   |
+| Metrics    | `http://localhost:9777/metrics` | Prometheus format        |
+| Monitor    | `http://localhost:9777/monitor` | System metrics (JSON)    |
+| Prometheus | `http://localhost:9090`         | Metrics UI               |
+| Grafana    | `http://localhost:3000`         | Dashboards (admin/admin) |
+| Jaeger     | `http://localhost:16686`        | Distributed tracing UI   |
+
+## Features
+
+### NGINX Reverse Proxy
+
+The included NGINX configuration ([`nginx/nginx.conf`](nginx/nginx.conf)) provides:
+
+- Front-facing reverse proxy on port 80
+- Rate limiting zones (100 req/s for API traffic, 1000 req/s burst protection)
+- Static file serving with 30-day cache headers
+- Security headers (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection)
+- Gzip compression for text-based responses
+- Custom error pages (404, 50x)
+- Upstream health checking with `least_conn` algorithm
+- Proxy headers for real client IP forwarding
+
+See [NGINX_SETUP.md](NGINX_SETUP.md) for detailed NGINX configuration and SSL/TLS setup instructions.
+
+### DDoS Protection
+
+**Implementation:** [`middleware.go`](middleware.go) — `DDoSProtection` struct
+
+- Per-IP request counting with 1-minute sliding windows
+- Automatic IP blocking after configurable threshold (default: 1000 req/min)
+- Temporary blocks with configurable duration (default: 10 minutes)
+- Permanent whitelist and blacklist via admin API
+- Background cleanup of expired blocks and stale counters
+- `blocked_ips_total` Prometheus counter
+
+### Load Balancing
+
+**Implementation:** [`routing.go`](routing.go) — `ServicePool` struct
+
+| Algorithm        | Best For                     | Sticky Sessions |
+|------------------|------------------------------|-----------------|
+| `round-robin`    | Uniform backends             | No              |
+| `least-conn`     | Varying request durations    | No              |
+| `ip-hash`        | Session affinity             | Yes             |
+| `weighted`       | Heterogeneous backends       | No              |
+
+All algorithms automatically skip unhealthy backends. Active health checks run on a configurable interval (default: 10 s) using TCP dial.
+
+### Security
+
+**Implementation:** [`middleware.go`](middleware.go) — authentication, rate limiting, headers
+
+- **JWT authentication** — HMAC signature verification with expiration checking
+- **API key authentication** — SHA-256 hashed key comparison
+- **Per-IP rate limiting** — Token bucket algorithm via `golang.org/x/time/rate`
+- **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, `Content-Security-Policy`, `X-XSS-Protection`, `Referrer-Policy`
+- **Request ID middleware** — Generates or preserves `x-request-id` for traceability
+- **Public endpoint bypass** — Configurable list of paths that skip authentication (`/health`, `/metrics`, `/login`, `/register`, `/api/v1/public`)
+
+### Caching & Performance
+
+**Implementation:** [`handlers.go`](handlers.go) — `CacheManager` struct, `makeGzipHandler()`
+
+- Redis-backed response caching for GET requests
+- Cache key generation from method, host, and path
+- `X-Cache: HIT` / `X-Cache: MISS` response headers
+- Configurable TTL (default: 5 minutes)
+- Gzip compression for clients that accept it
+- Connection pooling with configurable idle connections and timeouts
+
+### Observability
+
+**Prometheus metrics** — defined in [`metrics.go`](metrics.go), exposed at `/metrics`:
+
+| Metric                            | Type      | Description                          |
+|-----------------------------------|-----------|--------------------------------------|
+| `http_requests_total`             | Counter   | Requests by method, endpoint, status |
+| `http_request_duration_seconds`   | Histogram | Latency distribution                 |
+| `active_connections`              | Gauge     | Current active connections           |
+| `backend_health_status`           | Gauge     | Per-backend health (1 = up, 0 = down) |
+| `circuit_breaker_trips_total`     | Counter   | Circuit breaker activations          |
+| `blocked_ips_total`               | Counter   | IPs blocked by DDoS protection       |
+| `cache_hits_total`                | Counter   | Cache hits                           |
+
+**Distributed tracing** — Jaeger integration via OpenTracing ([`handlers.go`](handlers.go) — `initTracer()`). Every request gets a span tagged with method, path, user ID, backend URL, and error status.
+
+**Structured logging** — Custom leveled logger ([`logger.go`](logger.go)) with component tags, request IDs, colour output, and configurable level (`LOG_LEVEL` env var).
+
+### Reliability
+
+**Implementation:** [`middleware.go`](middleware.go) — `CircuitBreaker` struct
+
+- **Circuit breaker** — Opens after configurable consecutive failures (default: 5), transitions to half-open after timeout (default: 30 s), closes on successful probe
+- **Retry with exponential backoff** — Up to 3 attempts per request with 100 ms / 200 ms / 400 ms delays
+- **Configurable timeouts** — Per-route and global connection timeouts
+- **Graceful shutdown** — Catches `SIGTERM`/`SIGINT`, drains in-flight requests with a 30 s deadline
+
+### Live Dashboard
+
+**Implementation:** [`dashboard.go`](dashboard.go)
+
+When running in a TTY, the gateway displays a live terminal dashboard (similar to `htop`/`nvtop`) showing:
+
+- CPU and memory usage with colour-coded bars
+- Per-core CPU breakdown
+- Active connections, total requests, blocked IPs, circuit breaker trips
+- Route/backend table with live health status and connection counts
+- Request history sparkline
+
+Set `NO_DASHBOARD=1` to disable the live dashboard.
+
+## Configuration
+
+All configuration is read from environment variables with sensible defaults. See [`config.go`](config.go) for the full `Config` struct.
+
+| Variable                  | Default                               | Description                             |
+|---------------------------|---------------------------------------|-----------------------------------------|
+| `GATEWAY_PORT`            | `:9777`                               | Listen address                          |
+| `JWT_SECRET`              | `your-secret-key-change-in-production`| HMAC signing key for JWT tokens         |
+| `MAX_REQUESTS_PER_SECOND` | `100`                                 | Per-IP rate limit (requests/sec)        |
+| `MAX_BURST_SIZE`          | `200`                                 | Token bucket burst size                 |
+| `DDOS_THRESHOLD`          | `1000`                                | Max requests per minute before IP block |
+| `BLOCK_DURATION`          | `10m`                                 | Duration of DDoS IP blocks              |
+| `HEALTH_CHECK_INTERVAL`   | `10s`                                 | Backend health check frequency          |
+| `CONNECTION_TIMEOUT`      | `30s`                                 | Proxy timeout per request               |
+| `MAX_IDLE_CONNS`          | `100`                                 | HTTP transport idle connection pool     |
+| `IDLE_CONN_TIMEOUT`       | `90s`                                 | Idle connection lifetime                |
+| `CIRCUIT_BREAKER_MAX`     | `5`                                   | Failures before circuit opens           |
+| `CIRCUIT_BREAKER_TIMEOUT` | `30s`                                 | Time before half-open probe             |
+| `ENABLE_COMPRESSION`      | `true`                                | Enable gzip compression                 |
+| `ENABLE_CACHING`          | `true`                                | Enable Redis response caching           |
+| `CACHE_TTL`               | `5m`                                  | Cache entry time-to-live                |
+| `REDIS_ADDR`              | `localhost:6379`                      | Redis server address                    |
+| `LOAD_BALANCING_ALGO`     | `least-conn`                          | Algorithm: `round-robin`, `least-conn`, `ip-hash`, `weighted` |
+| `LOG_LEVEL`               | `info`                                | Logging level: `debug`, `info`, `warn`, `error` |
+| `CORS_ALLOWED_ORIGINS`    | `["*"]`                               | JSON array of allowed CORS origins      |
+| `NO_DASHBOARD`            | _(unset)_                             | Set to any value to disable live TUI    |
+| `NO_COLOR`                | _(unset)_                             | Disable coloured log output             |
+
+### Environment Variables
+
+Example `.env` file for local development:
+
+```bash
+GATEWAY_PORT=:9777
+JWT_SECRET=change-me-in-production
+MAX_REQUESTS_PER_SECOND=100
+MAX_BURST_SIZE=200
+DDOS_THRESHOLD=1000
+REDIS_ADDR=localhost:6379
+LOAD_BALANCING_ALGO=least-conn
+ENABLE_CACHING=true
+CACHE_TTL=5m
+LOG_LEVEL=debug
+```
+
+The gateway automatically loads a `.env` file from the working directory if present.
+
+### Service Routes
+
+Routes map URL prefixes to backend services. There are three ways to configure them (checked in order):
+
+**1. JSON array** (`SERVICE_ROUTES` env var):
+
+```bash
+export SERVICE_ROUTES='[
+  {"prefix":"/api/llm","target_url":"http://llm-service:8745","strip_prefix":true,"require_auth":false,"weight":1,"timeout_secs":30},
+  {"prefix":"/api/admin","target_url":"http://admin-service:8742","strip_prefix":true,"require_auth":true,"weight":1,"timeout_secs":15}
+]'
+```
+
+**2. Individual env vars** (per-route `ROUTE_<NAME>_PREFIX` / `ROUTE_<NAME>_URL` pairs):
+
+```bash
+export ROUTE_LLM_PREFIX=/api/llm
+export ROUTE_LLM_URL=http://llm-service:8745
+export ROUTE_ADMIN_PREFIX=/api/admin
+export ROUTE_ADMIN_URL=http://admin-service:8742
+```
+
+**3. Built-in defaults** — If no route env vars are set, the gateway registers a set of default development routes (see [`config.go`](config.go) — `loadServiceRoutes()`).
+
+Each route supports:
+
+| Field          | Description                                           |
+|----------------|-------------------------------------------------------|
+| `prefix`       | URL path prefix to match (longest-match wins)         |
+| `target_url`   | Backend service URL                                   |
+| `strip_prefix` | Remove the matched prefix before forwarding           |
+| `require_auth` | Require JWT/API key for this route                    |
+| `weight`       | Load-balancing weight (for `weighted` algorithm)      |
+| `timeout_secs` | Per-route proxy timeout (overrides global default)    |
+
+## API Reference
+
+### Public Endpoints
+
+| Method | Path                  | Description                              |
+|--------|-----------------------|------------------------------------------|
+| GET    | `/health`             | Health status with backend details       |
+| GET    | `/metrics`            | Prometheus metrics                       |
+| GET    | `/stats`              | Runtime gateway statistics               |
+| GET    | `/monitor`            | System metrics (CPU, memory, processes)  |
+| GET    | `/api/system-metrics` | System metrics (alias)                   |
+| POST   | `/login`              | Authentication endpoint (placeholder)    |
+
+### Admin Endpoints
+
+| Method | Path                            | Description                |
+|--------|---------------------------------|----------------------------|
+| POST   | `/admin/whitelist?ip=<address>` | Add IP to DDoS whitelist   |
+| POST   | `/admin/blacklist?ip=<address>` | Add IP to DDoS blacklist   |
+
+### Protected / Proxied Endpoints
+
+All requests matching a configured route prefix are forwarded to the corresponding backend. Authentication can be enforced per route.
+
+**With JWT:**
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:9777/api/llm/v1/models
+```
+
+**With API key:**
+
+```bash
+curl -H "X-API-Key: demo-api-key-123" \
+  http://localhost:9777/api/llm/v1/models
+```
+
+### Health Check Response
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-04-09T12:00:00Z",
+  "version": "2.0.0",
+  "circuit_breaker": "closed",
+  "routes": [
+    {
+      "prefix": "/api/llm",
+      "require_auth": false,
+      "strip_prefix": true,
+      "backends": [
+        {
+          "url": "http://localhost:8745",
+          "alive": true,
+          "connections": 0,
+          "weight": 1
+        }
+      ]
+    }
+  ]
+}
+```
+
+## Deployment
+
+### Docker Compose
+
+The included [`docker-compose.yml`](docker-compose.yml) starts the full observability stack:
+
+```bash
+# Start all services
+docker-compose up -d
+
+# View gateway logs
 docker-compose logs -f gateway
+
+# Stop everything
 docker-compose down
 ```
 
-### 2. Kubernetes (Production)
+Services included: gateway (with NGINX), Redis, Prometheus, Grafana, Jaeger.
+
+### Kubernetes
 
 ```bash
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/redis.yaml
 kubectl apply -f k8s/ingress.yaml
 
+# Check status
 kubectl get pods -n va-gateway
-kubectl get services -n va-gateway
 kubectl logs -f deployment/api-gateway -n va-gateway
 ```
 
-Kubernetes features:
-- Horizontal Pod Autoscaler (3-10 replicas)
-- Resource limits (512Mi RAM, 500m CPU)
-- Pod Disruption Budget (min 2 available)
-- Liveness and Readiness probes
-- NGINX Ingress with SSL
+The Kubernetes manifests include:
 
-### 3. Standalone Binary
+- Horizontal Pod Autoscaler (3–10 replicas)
+- Resource limits and requests
+- Liveness and readiness probes on `/health`
+- NGINX Ingress with TLS support
+
+### Standalone Binary
 
 ```bash
+# Build
 go build -o gateway .
+
+# Run (reads .env if present)
 ./gateway
+
+# Or with explicit config
+GATEWAY_PORT=:8080 REDIS_ADDR=redis:6379 ./gateway
 ```
 
-## Make Commands
+## Development
+
+### Prerequisites
+
+- Go 1.23+
+- (Optional) Redis for caching
+- (Optional) `golangci-lint` for linting
+- (Optional) `air` for hot reloading
+
+### Make Targets
 
 ```bash
+make help              # Show all available targets
+
 # Build & Run
-make build              # Build binary
-make run                # Run locally
+make build             # Compile binary
+make run               # Run with `go run`
+make dev               # Hot reload with air
+
+# Quality
+make test              # Run tests with coverage
+make test-race         # Run tests with race detector
+make fmt               # Format code
+make lint              # Run golangci-lint
 
 # Docker
-make docker-build       # Build Docker image
-make docker-up          # Start all services
-make docker-logs        # View logs
-make docker-down        # Stop all services
+make docker-build      # Build Docker image
+make docker-up         # Start docker-compose stack
+make docker-down       # Stop docker-compose stack
+make docker-logs       # Tail gateway logs
 
 # Kubernetes
-make k8s-deploy         # Deploy to K8s
-make k8s-status         # Check status
-make k8s-logs           # View logs
-make k8s-delete         # Remove deployment
+make k8s-deploy        # Apply K8s manifests
+make k8s-status        # Show pods, services, ingress
+make k8s-logs          # Tail deployment logs
+make k8s-delete        # Remove K8s resources
 
-# Testing
-make test               # Run unit tests
-make load-test          # Run load tests
-
-# Health & Metrics
-make health             # Check gateway health
-make metrics            # View Prometheus metrics
+# Utilities
+make health            # curl /health
+make metrics           # curl /metrics (filtered)
+make load-test         # Run scripts/load-test.sh
+make deps              # Download and tidy modules
+make clean             # Remove build artefacts
 ```
 
-## Testing
-
-### Unit Tests
+### Running Tests
 
 ```bash
-go test -v ./...
-go test -cover ./...
+# All tests with verbose output and coverage
+go test -v -cover ./...
+
+# With race detector
+go test -v -race ./...
+
+# Benchmarks
+go test -bench=. -benchmem ./...
 ```
 
-### Load Tests
+### Load Testing
 
 ```bash
-# Standard load test
+# Using the included script
 ./scripts/load-test.sh
 
-# Custom with wrk
-wrk -t10 -c100 -d60s http://localhost:8080/health
+# Using wrk
+wrk -t10 -c100 -d30s http://localhost:9777/health
 
 # With authentication
-wrk -t10 -c100 -d60s \
+wrk -t10 -c100 -d30s \
   -H "X-API-Key: demo-api-key-123" \
-  http://localhost:8080/api/test
-
-# DDoS simulation
-wrk -t50 -c500 -d10s http://localhost:8080/health
+  http://localhost:9777/api/llm/v1/models
 ```
-
-### Manual Health Check
-
-```bash
-curl http://localhost:8080/health | jq
-```
-
-Expected response:
-```json
-{
-  "status": "healthy",
-  "timestamp": "2026-01-08T12:00:00Z",
-  "version": "1.0.0",
-  "circuit_breaker": "closed",
-  "backends": [
-    {
-      "url": "http://localhost:8001",
-      "alive": true,
-      "connections": 5,
-      "weight": 3
-    }
-  ]
-}
-```
-
-## Performance Benchmarks
-
-Tested on a standard 2-core, 4GB RAM server:
-
-| Metric                | Value                      |
-|-----------------------|----------------------------|
-| Throughput (public)   | ~50,000 req/sec            |
-| Throughput (with JWT) | ~30,000 req/sec            |
-| Latency p50           | ~2ms                       |
-| Latency p95           | ~10ms                      |
-| Latency p99           | ~25ms                      |
-| Memory                | ~100MB base + ~1MB/1000 conn |
-| CPU                   | ~30% at 10k req/sec/core   |
-
-## Security Checklist
-
-1. Change `JWT_SECRET` in production
-2. Store API keys in a database, not in code
-3. Enable HTTPS with SSL/TLS certificates
-4. Configure rate limits based on traffic patterns
-5. Add trusted IPs to whitelist (CI/CD, monitoring)
-6. Regular dependency updates
-7. Enable connection encryption to Redis
-8. Use secrets management (Vault, K8s secrets)
 
 ## Project Structure
 
 ```
 va_api_gateway_golang/
-├── main.go                 # Complete gateway (~1500 lines)
-├── main_test.go            # Unit tests
-├── config.go               # Configuration management
-├── handlers.go             # HTTP request handlers
-├── routing.go              # Route matching and load balancing
-├── middleware.go           # Security and request ID middleware
-├── metrics.go              # Prometheus metric definitions
-├── go.mod                  # Dependencies
-├── go.sum                  # Dependency lock
-├── Makefile               # Build automation
-├── Dockerfile             # Multi-stage production container with nginx
-├── .dockerignore          # Docker build exclusions
-├── docker-compose.yml     # Full stack with nginx reverse proxy
-├── .env.development       # Dev environment
-├── .env.production        # Prod environment
+├── main.go                 # Gateway struct, ServeHTTP, server bootstrap
+├── main_test.go            # Unit tests and benchmarks
+├── config.go               # Configuration loading from environment
+├── handlers.go             # Cache manager, gzip, tracing, health/admin handlers
+├── routing.go              # Backend, ServicePool, ServiceRouter, health checks
+├── middleware.go            # Rate limiter, DDoS, circuit breaker, auth, headers
+├── metrics.go              # Prometheus metric definitions and registration
+├── logger.go               # Structured leveled logger with colour support
+├── dashboard.go            # Live terminal dashboard (htop-style TUI)
+├── system_monitor.go       # System metrics endpoint (CPU, memory, processes)
+├── go.mod / go.sum         # Go module dependencies
+├── Makefile                # Build, test, deploy automation
+├── Dockerfile              # Multi-stage build (Go + NGINX)
+├── docker-compose.yml      # Full stack: gateway, Redis, Prometheus, Grafana, Jaeger
+├── .env.development        # Development environment defaults
+├── .env.production         # Production environment template
+├── .dockerignore           # Docker build context exclusions
+├── .gitignore              # Git ignore rules
+├── LICENSE                 # MIT License
+├── NGINX_SETUP.md          # Detailed NGINX integration guide
 ├── nginx/
-│   ├── nginx.conf         # nginx reverse proxy configuration
-│   └── static/            # Static files
-│       ├── index.html     # Landing page
-│       ├── 404.html       # Custom 404 page
-│       └── 50x.html       # Custom error page
+│   ├── nginx.conf          # NGINX reverse proxy configuration
+│   └── static/             # Static files served by NGINX
 ├── config/
-│   └── prometheus.yml     # Metrics scraping config
+│   └── prometheus.yml      # Prometheus scrape configuration
 ├── k8s/
-│   ├── deployment.yaml    # K8s deployment with HPA (3-10 replicas)
-│   ├── redis.yaml         # Redis StatefulSet with PVC
-│   └── ingress.yaml       # NGINX ingress with SSL
+│   ├── deployment.yaml     # Gateway deployment + HPA
+│   ├── redis.yaml          # Redis StatefulSet
+│   └── ingress.yaml        # NGINX Ingress with TLS
 └── scripts/
-    ├── deploy.sh          # Automated deployment
-    └── load-test.sh       # Load testing with wrk/ab
+    ├── deploy.sh           # Deployment automation
+    └── load-test.sh        # Load testing with wrk/ab
 ```
 
 ## Dependencies
 
-| Library                    | Purpose              |
-|----------------------------|----------------------|
-| `golang-jwt/jwt/v5`       | JWT authentication   |
-| `prometheus/client_golang` | Metrics              |
-| `redis/go-redis/v9`       | Caching              |
-| `uber/jaeger-client-go`   | Distributed tracing  |
-| `opentracing/opentracing-go` | Tracing interface |
-| `golang.org/x/time/rate`  | Rate limiting        |
+| Library                               | Version | Purpose                     |
+|---------------------------------------|---------|-----------------------------|
+| [`golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt)       | v5.2.0  | JWT authentication          |
+| [`prometheus/client_golang`](https://github.com/prometheus/client_golang) | v1.18.0 | Prometheus metrics          |
+| [`redis/go-redis/v9`](https://github.com/redis/go-redis)       | v9.4.0  | Redis client for caching    |
+| [`uber/jaeger-client-go`](https://github.com/jaegertracing/jaeger-client-go) | v2.30.0 | Jaeger distributed tracing  |
+| [`opentracing/opentracing-go`](https://github.com/opentracing/opentracing-go) | v1.2.0  | OpenTracing interface       |
+| [`golang.org/x/time/rate`](https://pkg.go.dev/golang.org/x/time/rate) | v0.5.0  | Token bucket rate limiting  |
+| [`shirou/gopsutil/v3`](https://github.com/shirou/gopsutil)     | v3.24.5 | System metrics (CPU, memory)|
+| [`joho/godotenv`](https://github.com/joho/godotenv)            | v1.5.1  | `.env` file loading         |
 
 ## Troubleshooting
 
 ### Gateway won't start
+
 ```bash
-lsof -i :8080          # Check port availability
-docker-compose logs gateway  # Check logs
-make docker-logs       # Alternative log viewing
+# Check if the port is already in use
+lsof -i :9777
+
+# Check Docker logs
+docker-compose logs gateway
 ```
 
-### Backends not healthy
+### All backends show "down"
+
+Backends are health-checked via TCP dial. Ensure your backend services are running and reachable from the gateway's network.
+
 ```bash
-curl http://localhost:8001/health   # Check backend directly
-curl http://localhost:8080/health   # Check via gateway
-curl http://localhost:8080/health | jq '.backends'  # Backend status
+# Check health endpoint for backend status
+curl -s http://localhost:9777/health | jq '.routes[].backends'
+```
+
+### Rate limiting too aggressive
+
+Increase `MAX_REQUESTS_PER_SECOND` and `MAX_BURST_SIZE`, or whitelist trusted IPs via the admin endpoint:
+
+```bash
+curl -X POST "http://localhost:9777/admin/whitelist?ip=10.0.0.1"
+```
+
+### 503 Service Unavailable
+
+This means all backends for the matched route are down, or the circuit breaker is open. Check:
+
+```bash
+# Backend health
+curl -s http://localhost:9777/health | jq '.routes'
+
+# Circuit breaker state
+curl -s http://localhost:9777/stats | jq '.circuit_breaker_state'
 ```
 
 ### High memory usage
-- Reduce `MaxIdleConns` (default: 100)
-- Decrease cache TTL
-- Enable connection timeout cleanup
-- Check for connection leaks
 
-### Rate limiting too aggressive
-- Increase `MaxRequestsPerSecond`
-- Increase `MaxBurstSize`
-- Add trusted IPs to whitelist
+- Reduce `MAX_IDLE_CONNS` (default: 100)
+- Lower `CACHE_TTL` to reduce Redis memory
+- Check for connection leaks with the `/stats` endpoint
 
-### Gateway returns 503
-- Check backend health: `curl http://localhost:8001/health`
-- View circuit breaker state in metrics
-- Check if all backends are down
+### NGINX returns 502 Bad Gateway
 
-## Next Steps
+NGINX cannot reach the Go backend. Check that the gateway process is running:
 
-1. **Configure Backend Services** - Update backend URLs in main.go, set appropriate weights
-2. **Setup Monitoring** - Create Grafana dashboards, configure Prometheus alerts
-3. **Security Hardening** - Generate production JWT secret, setup SSL certificates, configure firewall rules
-4. **Testing** - Run load tests, verify DDoS protection, test failover scenarios
-5. **Production Deployment** - Deploy to Kubernetes, configure ingress, setup CI/CD pipeline
+```bash
+docker exec va_api_gateway_go curl -f http://localhost:9777/health
+```
 
-## Tips
+## Security Considerations
 
-- Use `least-conn` for APIs with varying request times
-- Enable caching for read-heavy endpoints to reduce backend load
-- Monitor circuit breaker - frequent trips indicate backend issues
-- Whitelist CI/CD IPs to avoid rate limiting builds
-- Scale horizontally by running multiple gateway instances behind a load balancer
+> **⚠️ Before deploying to production:**
+
+1. **Change `JWT_SECRET`** — The default value is insecure. Use a strong, random secret.
+2. **Move API keys to a database** — The demo keys are hardcoded for development only.
+3. **Enable HTTPS** — Configure SSL/TLS certificates in NGINX (see [NGINX_SETUP.md](NGINX_SETUP.md)).
+4. **Tune rate limits** — Adjust `MAX_REQUESTS_PER_SECOND`, `DDOS_THRESHOLD`, and NGINX rate zones based on your traffic patterns.
+5. **Whitelist trusted IPs** — Add CI/CD runners, monitoring systems, and internal services.
+6. **Encrypt Redis connections** — Enable TLS on Redis in production.
+7. **Use secrets management** — Store sensitive config in Vault, K8s Secrets, or your platform's secret manager.
+8. **Keep dependencies updated** — Run `go get -u` and review changelogs regularly.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Contributions are welcome! Here's how to get started:
+
+1. **Fork** the repository
+2. **Create a branch** for your feature or fix:
+   ```bash
+   git checkout -b feature/my-feature
+   ```
+3. **Make your changes** and add tests where appropriate
+4. **Run the test suite** to make sure nothing is broken:
+   ```bash
+   make test
+   ```
+5. **Commit** with a clear message:
+   ```bash
+   git commit -m "feat: add support for custom health check paths"
+   ```
+6. **Push** and open a **Pull Request**
+
+Please keep PRs focused on a single change. For larger changes, open an issue first to discuss the approach.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
 
-## Acknowledgments
+## Acknowledgements
 
-- Cloudflare for DDoS protection inspiration
-- NGINX for load balancing patterns
-- Netflix for circuit breaker pattern
-
-## Resources
-
-- [Go Documentation](https://golang.org/doc/)
-- [Prometheus Best Practices](https://prometheus.io/docs/practices/)
-- [JWT Specification](https://jwt.io/)
-- [Circuit Breaker Pattern](https://martinfowler.com/bliki/CircuitBreaker.html)
-
-## Support
-
-- GitHub Issues: [Create an issue](https://github.com/valtunox/va_api_gateway_golang/issues)
-- Email: support@valtunox.com
+- [NGINX](https://nginx.org/) — battle-tested reverse proxy patterns
+- [Netflix Hystrix](https://github.com/Netflix/Hystrix) — circuit breaker pattern
+- [Prometheus](https://prometheus.io/) — observability and monitoring
+- [Jaeger](https://www.jaegertracing.io/) — distributed tracing
 
 ---
 
-**Implementation Status: 100% Complete** - All 6 major feature categories are fully implemented and production-ready.
-
-**Made by Valtunox Team**
+<div align="center">
+  <sub>Built by the <a href="https://github.com/valtunox">Valtunox</a> team</sub>
+</div>
