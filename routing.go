@@ -308,7 +308,7 @@ func (sr *ServiceRouter) AddRoute(cfg ServiceRoute, algo string, transportCfg Co
 
 	timeout := time.Duration(cfg.TimeoutSecs) * time.Second
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 1 * time.Hour
 	}
 
 	sr.mu.Lock()

@@ -378,8 +378,8 @@ func main() {
 	srv := &http.Server{
 		Addr:         cfg.Port,
 		Handler:      handler,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 1 * time.Hour,
 		IdleTimeout:  120 * time.Second,
 	}
 
