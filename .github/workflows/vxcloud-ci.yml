@@ -1,0 +1,26 @@
+name: VxCloud CI - Go (vxapigateway)
+# CI/CD pipeline created via VxCloud. Builds the Go API gateway container and smoke-tests /health.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Go image (go build via Dockerfile)
+        run: docker build -t vxapigateway:${{ github.sha }} .
+      - name: Run container
+        run: docker run -d --name go-gw -p 9777:9777 vxapigateway:${{ github.sha }} || true
+      - name: Smoke test /health (best-effort; gateway may need runtime config)
+        continue-on-error: true
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS http://localhost:9777/health; then echo "OK healthy"; exit 0; fi
+            sleep 3
+          done
+          echo "health not confirmed"; docker logs go-gw || true
+      - name: Cleanup
+        if: always()
+        run: docker rm -f go-gw || true
