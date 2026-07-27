@@ -12,3 +12,12 @@
 *.conf text eol=lf
 Dockerfile text eol=lf
 Makefile   text eol=lf
+
+# Compiled output, in case a stale artifact is ever staged again: `text=auto`
+# detects binary content and leaves it alone, but saying so explicitly means a
+# checkout can never rewrite bytes inside an executable.
+gateway               binary
+va_api_gateway_golang binary
+*.exe                 binary
+*.so                  binary
+*.a                   binary

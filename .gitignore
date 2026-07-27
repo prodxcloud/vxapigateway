@@ -21,3 +21,8 @@ bin-release/
 .env
 .env.*
 !.env.example
+
+# Compiled binaries: 44 MB of build output does not belong in the repo.
+/gateway
+/va_api_gateway_golang
+*.exe
