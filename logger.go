@@ -198,10 +198,10 @@ func (l *Logger) log(level LogLevel, requestID, msg string, kvs ...interface{}) 
 	_, _ = l.out.Write([]byte(b.String()))
 }
 
-func (l *Logger) Debug(msg string, kvs ...interface{})   { l.log(LevelDebug, "", msg, kvs...) }
-func (l *Logger) Info(msg string, kvs ...interface{})    { l.log(LevelInfo, "", msg, kvs...) }
-func (l *Logger) Warn(msg string, kvs ...interface{})    { l.log(LevelWarn, "", msg, kvs...) }
-func (l *Logger) Error(msg string, kvs ...interface{})   { l.log(LevelError, "", msg, kvs...) }
+func (l *Logger) Debug(msg string, kvs ...interface{}) { l.log(LevelDebug, "", msg, kvs...) }
+func (l *Logger) Info(msg string, kvs ...interface{})  { l.log(LevelInfo, "", msg, kvs...) }
+func (l *Logger) Warn(msg string, kvs ...interface{})  { l.log(LevelWarn, "", msg, kvs...) }
+func (l *Logger) Error(msg string, kvs ...interface{}) { l.log(LevelError, "", msg, kvs...) }
 
 // WithRequestID logs with the given request ID (for request-scoped logs).
 func (l *Logger) WithRequestID(requestID string) *requestLogger {
@@ -227,16 +227,16 @@ func (r *requestLogger) Error(msg string, kvs ...interface{}) {
 }
 
 // Package-level helpers that use defaultLogger with optional component.
-func logGateway() *Logger  { return defaultLogger.WithComponent("gateway") }
-func logCache() *Logger    { return defaultLogger.WithComponent("cache") }
-func logRouter() *Logger   { return defaultLogger.WithComponent("router") }
-func logAuth() *Logger     { return defaultLogger.WithComponent("auth") }
-func logCircuit() *Logger  { return defaultLogger.WithComponent("circuit") }
-func logDDoS() *Logger     { return defaultLogger.WithComponent("ddos") }
-func logConfig() *Logger   { return defaultLogger.WithComponent("config") }
-func logAdmin() *Logger    { return defaultLogger.WithComponent("admin") }
-func logHealth() *Logger   { return defaultLogger.WithComponent("health") }
-func logTracer() *Logger   { return defaultLogger.WithComponent("tracer") }
+func logGateway() *Logger { return defaultLogger.WithComponent("gateway") }
+func logCache() *Logger   { return defaultLogger.WithComponent("cache") }
+func logRouter() *Logger  { return defaultLogger.WithComponent("router") }
+func logAuth() *Logger    { return defaultLogger.WithComponent("auth") }
+func logCircuit() *Logger { return defaultLogger.WithComponent("circuit") }
+func logDDoS() *Logger    { return defaultLogger.WithComponent("ddos") }
+func logConfig() *Logger  { return defaultLogger.WithComponent("config") }
+func logAdmin() *Logger   { return defaultLogger.WithComponent("admin") }
+func logHealth() *Logger  { return defaultLogger.WithComponent("health") }
+func logTracer() *Logger  { return defaultLogger.WithComponent("tracer") }
 func logProxy() *Logger   { return defaultLogger.WithComponent("proxy") }
 
 // PrintBanner writes raw lines between separators with optional coloring.

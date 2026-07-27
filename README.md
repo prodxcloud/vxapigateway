@@ -161,12 +161,59 @@ wrk -t10 -c100 -d30s http://localhost:9777/health
 - **Security headers** — `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `Content-Security-Policy`, `X-XSS-Protection`, `Referrer-Policy` — applied to every response.
 - **CORS** — Configurable allowed origins via `CORS_ALLOWED_ORIGINS` (JSON array, defaults to `["*"]`).
 
-### Dynamic routing
+### Dynamic routing — any domain, any upstream
 
-- **Longest-prefix matching** — Routes are kept sorted by prefix length, so `/api/studio2/foo` matches before `/api/studio`.
-- **Strip-prefix forwarding** — Optionally trim the matched prefix before forwarding to the upstream.
-- **Per-route timeouts & auth** — Each route declares its own `timeout_secs` and `require_auth`.
-- **Configurable via env vars *or* JSON** — Either set `SERVICE_ROUTES` to a JSON array, or use individual `ROUTE_<NAME>_PREFIX` / `ROUTE_<NAME>_URL` pairs.
+The gateway matches on **Host and path**, so a single instance fronts any number
+of unrelated domains, each with its own pool of upstreams on any ports.
+
+- **Host matching** — `""` matches any domain, `api.example.com` is exact,
+  `*.example.com` covers any subdomain but deliberately not the apex (matching
+  DNS wildcard and wildcard-certificate semantics). Case, an explicit port
+  (`example.com:8443`), a trailing FQDN dot and IPv6 brackets are all normalised
+  away before comparison.
+- **Most-specific-first matching** — the table is ordered exact host → wildcard
+  host → catch-all, and within a host class by descending prefix length. A
+  catch-all `/` route therefore cannot shadow a domain-specific route no matter
+  what order they were registered in.
+- **Segment-boundary prefixes** — `/api/v1` matches `/api/v1/users` but *not*
+  `/api/v11`. A plain prefix test would quietly hand one service's traffic to
+  another.
+- **Many upstreams per route** — `targets` takes a list, so the load-balancing
+  algorithms have something to choose between. `target_url` still works and is
+  merged with `targets`, de-duplicated.
+- **Forgiving upstream syntax** — `10.0.0.5:8080`, `example.com` and
+  `https://api.example.com/v1` are all accepted. (A bare `host:port` is *not* a
+  URL as far as `url.Parse` is concerned — it parses as scheme `10.0.0.5` — so it
+  is detected and defaulted to `http`.)
+- **HTTP health checks** — set `health_path` and liveness becomes "does the
+  application answer" rather than "is a socket open". A listening socket in front
+  of a wedged process is exactly what a TCP dial cannot detect.
+- **Host forwarding** — the upstream always receives `X-Forwarded-Host` and
+  `X-Forwarded-Proto` so it can reconstruct the public URL; `preserve_host`
+  additionally forwards the original `Host` verbatim, for upstreams that serve
+  virtual hosts themselves.
+- **No implicit routes** — declaring nothing yields an empty table and a warning.
+  The nine VxCloud localhost routes are opt-in via
+  `ENABLE_VXCLOUD_DEFAULT_ROUTES`.
+- **Per-route timeouts and auth** — each route declares its own `timeout_secs`
+  and `require_auth`.
+
+```bash
+# Two unrelated domains, three upstreams, arbitrary ports.
+export SERVICE_ROUTES='[
+  {"name":"api","host":"api.acme.example","prefix":"/",
+   "targets":["10.0.0.11:8080","10.0.0.12:8080"],
+   "health_path":"/healthz","strip_prefix":false},
+  {"name":"shop","host":"*.shop.example","prefix":"/v1",
+   "target_url":"https://origin.internal","preserve_host":true}
+]'
+
+# Or per-route env vars, under any name you like.
+export ROUTE_BILLING_HOST=billing.acme.example
+export ROUTE_BILLING_TARGETS=10.0.0.7:8080,https://billing-2.internal
+export ROUTE_BILLING_WEIGHTS=3,1
+export ROUTE_BILLING_HEALTH_PATH=/healthz
+```
 
 ### Load balancing
 
@@ -178,6 +225,29 @@ wrk -t10 -c100 -d30s http://localhost:9777/health
 | `weighted` | Priority or capacity-tiered backends | No |
 
 All algorithms skip dead backends and honor the per-backend `Weight`.
+
+> These were unreachable before multi-upstream routes existed: every pool was
+> built with exactly one backend, so there was never anything to balance.
+
+### Retry, failover and status accounting
+
+A failed round trip is reported by `httputil.ReverseProxy` through its
+`ErrorHandler`, not as a return value. The dispatcher now observes both the
+error and the real response, which makes three things work that previously did
+not:
+
+- **Retry and failover** — a connect-time failure moves to another backend in the
+  pool. Retrying stops as soon as any byte has reached the client, because a
+  response cannot be restarted once it is committed.
+- **Honest metrics and logs** — `http_requests_total` records the status the
+  upstream actually returned. Every proxied request used to be counted as `200`,
+  including ones answered with `502`.
+- **A circuit breaker that trips** — real backend failures now reach
+  `RecordFailure` and the breaker.
+
+Verified end to end: an upstream replying 404 or 500 is recorded as 404 or 500, a
+route whose only upstream is dead returns 503 after retries, and killing one of
+two upstreams mid-run leaves the remaining traffic at 8/8 × 200.
 
 ### Resilience
 
@@ -376,25 +446,80 @@ Every config value is read from environment variables at boot. See [config.go](c
 | `ENABLE_CACHING` | `true` | Redis response cache for `GET` requests |
 | `CACHE_TTL` | `5m` | TTL for cached responses |
 
-### Routes (two ways)
+### Routes (three ways, additive)
 
-**Option A — single JSON array:**
+`SERVICE_ROUTES` and the `ROUTE_*` variables are combined, so a JSON baseline can
+be extended per deployment without re-encoding the whole array.
+
+**Option A — a JSON array.** The full surface.
+
 ```bash
 export SERVICE_ROUTES='[
-  {"prefix":"/api/studio","target_url":"http://studio:3000","strip_prefix":true,"require_auth":false,"weight":1,"timeout_secs":30},
-  {"prefix":"/api/agent","target_url":"http://agent:8788","strip_prefix":true,"require_auth":true,"weight":3,"timeout_secs":60}
+  {"name":"api","host":"api.acme.example","prefix":"/",
+   "targets":["10.0.0.11:8080","10.0.0.12:8080"],"weights":[3,1],
+   "health_path":"/healthz","strip_prefix":false,"timeout_secs":30},
+  {"name":"shop","host":"*.shop.example","prefix":"/v1",
+   "target_url":"https://origin.internal","preserve_host":true,"require_auth":true}
 ]'
 ```
 
-**Option B — individual env pairs (one per backend):**
+| Field | Meaning |
+|:------|:--------|
+| `host` | `""` any · `api.example.com` exact · `*.example.com` subdomains (not the apex) |
+| `prefix` | path prefix, matched on segment boundaries; `/` matches everything on the host |
+| `target_url` | one upstream |
+| `targets` | several upstreams, balanced by `LOAD_BALANCING_ALGO`; merged with `target_url` and de-duplicated |
+| `weights` | positional against `targets`, for the `weighted` algorithm |
+| `health_path` | probe with an HTTP GET (anything below 500 is healthy) instead of a TCP dial |
+| `preserve_host` | forward the client's `Host` rather than rewriting it to the upstream's |
+| `strip_prefix` | trim the matched prefix before forwarding |
+| `require_auth` | demand a valid JWT or API key |
+| `timeout_secs` | per-route upstream timeout |
+
+Upstreams may be written as `host:port`, `host`, or a full URL.
+
+**Option B — `ROUTE_<NAME>_*` variables.** `<NAME>` is anything you choose; it is
+not checked against a built-in list, so you can declare as many routes to as many
+domains as you like without touching the code. A route needs at least a `_URL` or
+`_TARGETS`, or it is skipped with a warning.
+
 ```bash
-export ROUTE_STUDIO_PREFIX=/api/studio
-export ROUTE_STUDIO_URL=http://studio:3000
-export ROUTE_AGENT_PREFIX=/api/agent
-export ROUTE_AGENT_URL=http://agent:8788
+export ROUTE_BILLING_HOST=billing.acme.example
+export ROUTE_BILLING_PREFIX=/v2
+export ROUTE_BILLING_TARGETS=10.0.0.7:8080,https://billing-2.internal
+export ROUTE_BILLING_WEIGHTS=3,1
+export ROUTE_BILLING_HEALTH_PATH=/healthz
+export ROUTE_BILLING_PRESERVE_HOST=true
 ```
 
-Routes fall back to built-in defaults (see table above) if neither is set.
+Recognised suffixes: `URL`, `TARGETS`, `PREFIX`, `HOST`, `STRIP_PREFIX`,
+`REQUIRE_AUTH`, `WEIGHT`, `WEIGHTS`, `TIMEOUT_SECS`, `HEALTH_PATH`,
+`PRESERVE_HOST`.
+
+**Option C — the VxCloud localhost topology.** The nine fixed ports in the table
+above, behind an opt-in flag:
+
+```bash
+export ENABLE_VXCLOUD_DEFAULT_ROUTES=true
+```
+
+> **Behaviour change.** These nine routes used to be registered unconditionally
+> on every boot. The guard meant to suppress them read
+> `if anySet || len(routes) > 0`, and the loop above it always appended nine
+> entries — so the condition was always true and there was no way to run the
+> gateway with a different topology, with fewer routes, or with none. Declaring
+> no routes now yields an empty table and a warning. Set the flag above to
+> restore the old behaviour.
+
+### Secrets
+
+`.env`, `.env.development` and `.env.production` are gitignored; only
+[`.env.example`](.env.example) is tracked. Copy it and generate real values:
+
+```bash
+cp .env.example .env
+openssl rand -base64 48   # JWT_SECRET
+```
 
 <br />
 

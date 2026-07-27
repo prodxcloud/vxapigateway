@@ -1,0 +1,14 @@
+# Go tooling assumes LF: gofmt reports every CRLF file as unformatted, so a
+# Windows checkout otherwise fails `gofmt -l` on files nobody edited.
+* text=auto eol=lf
+
+*.go   text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.md   text eol=lf
+*.conf text eol=lf
+Dockerfile text eol=lf
+Makefile   text eol=lf

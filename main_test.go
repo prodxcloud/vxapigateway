@@ -84,7 +84,8 @@ func TestServiceRouter_Route(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matched := router.Route(tt.path)
+			// Empty host: these routes declare no Host, so they match any domain.
+			matched := router.Route("", tt.path)
 			if tt.wantNil {
 				if matched != nil {
 					t.Errorf("expected nil match for path %q, got non-nil", tt.path)
@@ -157,7 +158,8 @@ func TestServiceRouter_StripPrefix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matched := router.Route(tt.path)
+			// Empty host: these routes declare no Host, so they match any domain.
+			matched := router.Route("", tt.path)
 			if matched == nil {
 				t.Fatalf("expected non-nil match for path %q", tt.path)
 			}
@@ -417,8 +419,8 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 
 	expectedHeaders := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
-		"X-XSS-Protection":      "1; mode=block",
+		"X-Frame-Options":        "DENY",
+		"X-XSS-Protection":       "1; mode=block",
 	}
 
 	for header, expected := range expectedHeaders {

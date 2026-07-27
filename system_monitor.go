@@ -23,7 +23,7 @@ func loadAverage() ([]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// For Windows, we'll simulate load averages using CPU usage
 	// This is a rough approximation
 	if hostInfo.OS == "windows" {
@@ -34,7 +34,7 @@ func loadAverage() ([]float64, error) {
 		load := cpuPercent[0] / 100.0 // Convert to 0-1 range
 		return []float64{load, load, load}, nil
 	}
-	
+
 	// For Unix-like systems, we would use the actual load averages
 	// but since host.LoadAverage() is not available, we'll use CPU usage as approximation
 	cpuPercent, err := cpu.Percent(time.Second, false)
@@ -47,13 +47,13 @@ func loadAverage() ([]float64, error) {
 
 // SystemMetrics holds system monitoring data
 type SystemMetrics struct {
-	Timestamp    time.Time     `json:"timestamp"`
-	CPU          CPUMetrics    `json:"cpu"`
-	Memory       MemoryMetrics `json:"memory"`
-	Swap         SwapMetrics   `json:"swap"`
-	GPU          GPUMetrics    `json:"gpu"`
-	Processes    []ProcessInfo `json:"processes"`
-	SystemInfo   SystemInfo    `json:"system_info"`
+	Timestamp  time.Time     `json:"timestamp"`
+	CPU        CPUMetrics    `json:"cpu"`
+	Memory     MemoryMetrics `json:"memory"`
+	Swap       SwapMetrics   `json:"swap"`
+	GPU        GPUMetrics    `json:"gpu"`
+	Processes  []ProcessInfo `json:"processes"`
+	SystemInfo SystemInfo    `json:"system_info"`
 }
 
 type CPUMetrics struct {
@@ -93,15 +93,15 @@ type GPUMetrics struct {
 }
 
 type ProcessInfo struct {
-	PID         int     `json:"pid"`
-	Name        string  `json:"name"`
-	CPUPercent  float64 `json:"cpu_percent"`
+	PID           int     `json:"pid"`
+	Name          string  `json:"name"`
+	CPUPercent    float64 `json:"cpu_percent"`
 	MemoryPercent float64 `json:"memory_percent"`
-	MemoryRSS   uint64  `json:"memory_rss"`
-	Status      string  `json:"status"`
-	CreateTime  int64   `json:"create_time"`
-	Cmdline     string  `json:"cmdline"`
-	GPUMemory   uint64  `json:"gpu_memory_mb"`
+	MemoryRSS     uint64  `json:"memory_rss"`
+	Status        string  `json:"status"`
+	CreateTime    int64   `json:"create_time"`
+	Cmdline       string  `json:"cmdline"`
+	GPUMemory     uint64  `json:"gpu_memory_mb"`
 }
 
 type SystemInfo struct {

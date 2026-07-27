@@ -3,18 +3,63 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
-// ServiceRoute defines a prefix-based route to a backend service pool.
+// ServiceRoute defines a host+prefix route to a pool of upstream servers.
 type ServiceRoute struct {
-	Prefix      string `json:"prefix"`
-	TargetURL   string `json:"target_url"`
-	StripPrefix bool   `json:"strip_prefix"`
-	RequireAuth bool   `json:"require_auth"`
-	Weight      int    `json:"weight"`
-	TimeoutSecs int    `json:"timeout_secs"`
+	// Host restricts this route to a domain.
+	//
+	//	""                 matches any Host header — a path-only gateway, which
+	//	                   is what every pre-existing config gets, unchanged.
+	//	"api.example.com"  exact match, case-insensitive, port ignored.
+	//	"*.example.com"    any subdomain, but not the apex (the usual
+	//	                   convention, and what a wildcard TLS cert covers).
+	//
+	// Nothing here is limited to a fixed set of names or ports: the host and the
+	// upstream are both free-form, so the gateway fronts whatever domains and
+	// servers you point it at.
+	Host string `json:"host"`
+
+	Prefix string `json:"prefix"`
+
+	// TargetURL is the single-upstream form. Kept because every existing config
+	// and env var uses it.
+	TargetURL string `json:"target_url"`
+
+	// Targets is the multi-upstream form. Both may be set; they are merged, so
+	// TargetURL keeps working while Targets adds a pool around it. This is what
+	// makes the load-balancing algorithms real — before, every pool held exactly
+	// one backend, so round-robin, least-conn, ip-hash and weighted were all
+	// unreachable code.
+	Targets []string `json:"targets"`
+
+	StripPrefix bool `json:"strip_prefix"`
+	RequireAuth bool `json:"require_auth"`
+
+	// Weight applies to TargetURL, or to every target when Weights is empty.
+	Weight int `json:"weight"`
+	// Weights is positional against the merged target list; missing entries
+	// fall back to Weight.
+	Weights []int `json:"weights"`
+
+	TimeoutSecs int `json:"timeout_secs"`
+
+	// HealthPath turns liveness checking from "can I open a TCP connection" into
+	// "does the application answer". A listening socket in front of a wedged app
+	// is exactly the case a TCP dial cannot see.
+	HealthPath string `json:"health_path"`
+
+	// PreserveHost forwards the client's original Host header to the upstream
+	// instead of rewriting it to the target's host. Needed when the upstream
+	// itself serves virtual hosts; wrong when it validates its own Host.
+	PreserveHost bool `json:"preserve_host"`
+
+	// Name is cosmetic, used in logs and on the stats endpoint.
+	Name string `json:"name"`
 }
 
 // Config holds all gateway configuration values, loaded from environment
@@ -98,65 +143,201 @@ func envOrDuration(key string, fallback time.Duration) time.Duration {
 	return d
 }
 
-// loadServiceRoutes builds the list of ServiceRoute entries.  It first checks
-// the SERVICE_ROUTES env var for a JSON array.  If that is not set it falls
-// back to individual ROUTE_<NAME>_PREFIX / ROUTE_<NAME>_URL pairs, and
-// finally to hardcoded defaults.
-func loadServiceRoutes() []ServiceRoute {
-	// 1. Try SERVICE_ROUTES JSON array
-	if raw := os.Getenv("SERVICE_ROUTES"); raw != "" {
-		var routes []ServiceRoute
-		if err := json.Unmarshal([]byte(raw), &routes); err != nil {
-			logConfig().Warn("failed to parse SERVICE_ROUTES JSON, falling back to individual vars", "error", err)
-		} else if len(routes) > 0 {
-			return routes
+// vxCloudDefaultRoutes is the VxCloud-specific localhost topology this gateway
+// grew up in front of.  It is opt-in via ENABLE_VXCLOUD_DEFAULT_ROUTES.
+//
+// It used to be unconditional, and that was the single biggest limitation in the
+// gateway: nine routes pinned to nine hardcoded localhost ports were registered
+// on every boot whether the operator wanted them or not. The guard that was
+// supposed to suppress them read `if anySet || len(routes) > 0`, and the loop
+// above it always appended nine entries — so `len(routes)` was always 9, the
+// condition was always true, and `anySet` was dead. There was no way to run the
+// gateway with a different topology, or with fewer routes, or none.
+var vxCloudDefaultRoutes = []ServiceRoute{
+	{Name: "studio", Prefix: "/api/studio", TargetURL: "http://localhost:3000"},
+	{Name: "studio2", Prefix: "/api/studio2", TargetURL: "http://localhost:3001"},
+	{Name: "ai", Prefix: "/api/ai", TargetURL: "http://localhost:8741"},
+	{Name: "admin", Prefix: "/api/admin", TargetURL: "http://localhost:8242"},
+	{Name: "core", Prefix: "/api/core", TargetURL: "http://localhost:8743"},
+	{Name: "node", Prefix: "/api/node", TargetURL: "http://localhost:8744"},
+	{Name: "llm", Prefix: "/api/llm", TargetURL: "http://localhost:8745"},
+	{Name: "llm2", Prefix: "/api/llm2", TargetURL: "http://localhost:8746"},
+	{Name: "agent", Prefix: "/api/agent", TargetURL: "http://localhost:8788"},
+}
+
+// splitList parses a comma- or whitespace-separated list, dropping empties.
+func splitList(raw string) []string {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// routeEnvSuffixes are the per-route knobs recognised on ROUTE_<NAME>_<SUFFIX>.
+var routeEnvSuffixes = []string{
+	"URL", "TARGETS", "PREFIX", "HOST", "STRIP_PREFIX", "REQUIRE_AUTH",
+	"WEIGHT", "WEIGHTS", "TIMEOUT_SECS", "HEALTH_PATH", "PRESERVE_HOST",
+}
+
+// loadEnvNamedRoutes discovers routes by scanning the environment for
+// ROUTE_<NAME>_<SUFFIX> variables.
+//
+// The name is whatever the operator chooses — it is not matched against a
+// built-in list, so any number of routes to any hosts and any upstreams can be
+// declared without touching this file. A route is only created when it has
+// somewhere to send traffic (URL or TARGETS), which is also what makes the
+// "declare nothing, get nothing" case work.
+func loadEnvNamedRoutes() []ServiceRoute {
+	// Group every ROUTE_<NAME>_<SUFFIX> by NAME. Longest suffix first so that
+	// ROUTE_X_STRIP_PREFIX is not mistaken for name "X_STRIP" suffix "PREFIX".
+	suffixes := make([]string, len(routeEnvSuffixes))
+	copy(suffixes, routeEnvSuffixes)
+	sort.Slice(suffixes, func(i, j int) bool { return len(suffixes[i]) > len(suffixes[j]) })
+
+	byName := map[string]map[string]string{}
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		key, val := kv[:eq], kv[eq+1:]
+		if !strings.HasPrefix(key, "ROUTE_") || val == "" {
+			continue
+		}
+		rest := key[len("ROUTE_"):]
+		for _, sfx := range suffixes {
+			if len(rest) > len(sfx)+1 && strings.HasSuffix(rest, "_"+sfx) {
+				name := rest[:len(rest)-len(sfx)-1]
+				if byName[name] == nil {
+					byName[name] = map[string]string{}
+				}
+				byName[name][sfx] = val
+				break
+			}
 		}
 	}
 
-	// 2. Try individual ROUTE_* env vars
-	type routeDef struct {
-		envPrefix string
-		envURL    string
-		prefix    string
-		url       string
+	names := make([]string, 0, len(byName))
+	for n := range byName {
+		names = append(names, n)
 	}
-
-	defs := []routeDef{
-		{"ROUTE_STUDIO_PREFIX", "ROUTE_STUDIO_URL", "/api/studio", "http://localhost:3000"},
-		{"ROUTE_STUDIO2_PREFIX", "ROUTE_STUDIO2_URL", "/api/studio2", "http://localhost:3001"},
-		{"ROUTE_AI_PREFIX", "ROUTE_AI_URL", "/api/ai", "http://localhost:8741"},
-		{"ROUTE_ADMIN_PREFIX", "ROUTE_ADMIN_URL", "/api/admin", "http://localhost:8242"},
-		{"ROUTE_CORE_PREFIX", "ROUTE_CORE_URL", "/api/core", "http://localhost:8743"},
-		{"ROUTE_NODE_PREFIX", "ROUTE_NODE_URL", "/api/node", "http://localhost:8744"},
-		{"ROUTE_LLM_PREFIX", "ROUTE_LLM_URL", "/api/llm", "http://localhost:8745"},
-		{"ROUTE_LLM2_PREFIX", "ROUTE_LLM2_URL", "/api/llm2", "http://localhost:8746"},
-		{"ROUTE_AGENT_PREFIX", "ROUTE_AGENT_URL", "/api/agent", "http://localhost:8788"},
-	}
+	sort.Strings(names) // deterministic registration order
 
 	var routes []ServiceRoute
-	anySet := false
+	for _, name := range names {
+		f := byName[name]
 
-	for _, d := range defs {
-		prefix := envOr(d.envPrefix, d.prefix)
-		targetURL := envOr(d.envURL, d.url)
-		if os.Getenv(d.envPrefix) != "" || os.Getenv(d.envURL) != "" {
-			anySet = true
+		targets := splitList(f["TARGETS"])
+		if f["URL"] == "" && len(targets) == 0 {
+			logConfig().Warn("route declared with no upstream, skipped",
+				"route", name, "hint", "set ROUTE_"+name+"_URL or ROUTE_"+name+"_TARGETS")
+			continue
 		}
-		routes = append(routes, ServiceRoute{
-			Prefix:      prefix,
-			TargetURL:   targetURL,
-			StripPrefix: true,
-			RequireAuth: false,
-			Weight:      1,
-			TimeoutSecs: 30,
-		})
+
+		prefix := f["PREFIX"]
+		if prefix == "" {
+			prefix = "/" // host-only route: match everything on that domain
+		}
+
+		r := ServiceRoute{
+			Name:         strings.ToLower(name),
+			Host:         f["HOST"],
+			Prefix:       prefix,
+			TargetURL:    f["URL"],
+			Targets:      targets,
+			StripPrefix:  true,
+			Weight:       1,
+			TimeoutSecs:  30,
+			HealthPath:   f["HEALTH_PATH"],
+			PreserveHost: parseBoolOr(f["PRESERVE_HOST"], false),
+		}
+		if v, ok := f["STRIP_PREFIX"]; ok {
+			r.StripPrefix = parseBoolOr(v, true)
+		}
+		if v, ok := f["REQUIRE_AUTH"]; ok {
+			r.RequireAuth = parseBoolOr(v, false)
+		}
+		if v, ok := f["WEIGHT"]; ok {
+			r.Weight = parseIntOr(v, 1)
+		}
+		if v, ok := f["TIMEOUT_SECS"]; ok {
+			r.TimeoutSecs = parseIntOr(v, 30)
+		}
+		for _, w := range splitList(f["WEIGHTS"]) {
+			r.Weights = append(r.Weights, parseIntOr(w, 1))
+		}
+		routes = append(routes, r)
+	}
+	return routes
+}
+
+func parseBoolOr(v string, fallback bool) bool {
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		return fallback
+	}
+	return b
+}
+
+func parseIntOr(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+// loadServiceRoutes builds the route table, in precedence order:
+//
+//  1. SERVICE_ROUTES — a JSON array, the most expressive form.
+//  2. ROUTE_<NAME>_* environment variables, for any names the operator invents.
+//  3. The VxCloud localhost defaults, only when ENABLE_VXCLOUD_DEFAULT_ROUTES
+//     is set.
+//
+// Sources 1 and 2 are additive, so a JSON base can be extended per deployment
+// without re-encoding the whole array. Declaring nothing yields an empty table
+// and a loud warning rather than nine invented localhost routes.
+func loadServiceRoutes() []ServiceRoute {
+	var routes []ServiceRoute
+
+	if raw := os.Getenv("SERVICE_ROUTES"); raw != "" {
+		var parsed []ServiceRoute
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			logConfig().Error("failed to parse SERVICE_ROUTES JSON; ignoring it", "error", err)
+		} else {
+			routes = append(routes, parsed...)
+		}
 	}
 
-	if anySet || len(routes) > 0 {
-		return routes
+	routes = append(routes, loadEnvNamedRoutes()...)
+
+	if envOrBool("ENABLE_VXCLOUD_DEFAULT_ROUTES", false) {
+		for _, d := range vxCloudDefaultRoutes {
+			d.StripPrefix = true
+			d.Weight = 1
+			d.TimeoutSecs = 30
+			routes = append(routes, d)
+		}
+		logConfig().Info("VxCloud default localhost routes enabled", "count", len(vxCloudDefaultRoutes))
 	}
 
-	// 3. Defaults (should not be reached since defs always produce routes)
+	if len(routes) == 0 {
+		logConfig().Warn("no routes configured; every request will get 404",
+			"hint", "set SERVICE_ROUTES, or ROUTE_<NAME>_URL / ROUTE_<NAME>_HOST, "+
+				"or ENABLE_VXCLOUD_DEFAULT_ROUTES=true")
+	}
 	return routes
 }
 

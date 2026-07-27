@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -141,10 +142,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Route matching
-	matched := g.router.Route(r.URL.Path)
+	// Route matching, on Host *and* path: the same gateway can front any number
+	// of domains, each with its own upstreams.
+	matched := g.router.Route(r.Host, r.URL.Path)
 	if matched == nil {
-		reqLog.Info("request rejected", "reason", "no route matched", "path", r.URL.Path, "method", r.Method)
+		reqLog.Info("request rejected", "reason", "no route matched",
+			"host", r.Host, "path", r.URL.Path, "method", r.Method)
 		http.Error(w, "No route matched", http.StatusNotFound)
 		requestsTotal.WithLabelValues(r.Method, r.URL.Path, "404").Inc()
 		return
@@ -237,7 +240,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.URL.RawPath = matched.BackendPath
 	}
 
-	// Circuit breaker with retry logic
+	// Circuit breaker with retry and failover.
 	maxRetries := 3
 	var lastErr error
 	timeout := matched.Timeout
@@ -245,7 +248,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		timeout = g.cfg.ConnectionTimeout
 	}
 
+	// Observe what the upstream actually returned, and whether any bytes have
+	// reached the client yet.
+	//
+	// Both are load-bearing. ReverseProxy signals a failed round trip through
+	// ErrorHandler rather than a return value, so the previous version's closure
+	// returned nil unconditionally: retry, failover, RecordFailure and the
+	// circuit breaker were all unreachable, and every proxied request — including
+	// ones the proxy answered with 502 — was logged and counted as a 200. The
+	// committed flag is what makes retrying safe: once a byte is on the wire the
+	// response cannot be restarted.
+	rec := newResponseRecorder(w)
+
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		sink := &proxyErrSink{}
+
 		err := g.circuitBreaker.Call(func() error {
 			backend.IncConnections()
 			defer backend.DecConnections()
@@ -257,40 +274,68 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
-			r = r.WithContext(ctx)
+			ctx = context.WithValue(ctx, ctxKeyErrSink{}, sink)
+			attemptReq := r.WithContext(ctx)
 
-			r.Header.Set("X-Forwarded-For", ip)
-			r.Header.Set("X-Real-IP", ip)
-			r.Header.Set("X-Gateway-Time", time.Now().Format(time.RFC3339))
+			// Append to any existing X-Forwarded-For chain rather than
+			// overwriting it: replacing it discards the real client when the
+			// gateway sits behind another proxy or a CDN.
+			if prior := attemptReq.Header.Get("X-Forwarded-For"); prior != "" && prior != ip {
+				attemptReq.Header.Set("X-Forwarded-For", prior+", "+ip)
+			} else {
+				attemptReq.Header.Set("X-Forwarded-For", ip)
+			}
+			attemptReq.Header.Set("X-Real-IP", ip)
+			attemptReq.Header.Set("X-Gateway-Time", time.Now().Format(time.RFC3339))
 
-			backend.ReverseProxy.ServeHTTP(w, r)
-			return nil
+			backend.ReverseProxy.ServeHTTP(rec, attemptReq)
+			return sink.err
 		})
 
 		if err == nil {
+			status := rec.Status()
 			durationMs := time.Since(start).Milliseconds()
-			reqLog.Info("request completed", "method", r.Method, "path", r.URL.Path, "backend", backend.URL.String(), "status", 200, "duration_ms", durationMs)
-			requestsTotal.WithLabelValues(r.Method, r.URL.Path, "200").Inc()
+			reqLog.Info("request completed",
+				"method", r.Method, "path", r.URL.Path, "host", r.Host,
+				"route", matched.Name, "backend", backend.URL.String(),
+				"status", status, "duration_ms", durationMs)
+			requestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(status)).Inc()
+			if span != nil {
+				span.SetTag("http.status_code", status)
+			}
 			return
 		}
 
 		lastErr = err
 		backend.RecordFailure()
-		reqLog.Warn("backend attempt failed", "attempt", attempt+1, "max_retries", maxRetries, "backend", backend.URL.String(), "error", err)
+		reqLog.Warn("backend attempt failed",
+			"attempt", attempt+1, "max_retries", maxRetries,
+			"backend", backend.URL.String(), "error", err)
+
+		// Nothing can be salvaged once the client has seen part of a response.
+		if rec.Committed() {
+			reqLog.Error("upstream failed mid-response; cannot retry",
+				"backend", backend.URL.String(), "status", rec.Status())
+			requestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(rec.Status())).Inc()
+			return
+		}
 
 		if attempt < maxRetries-1 {
 			backoff := time.Duration(1<<uint(attempt)) * 100 * time.Millisecond
 			time.Sleep(backoff)
-			backend = matched.Pool.NextPeer(ip)
-			if backend == nil {
-				break
+			// Prefer a different backend; NextPeer skips the ones health checks
+			// and RecordFailure have marked down.
+			if next := matched.Pool.NextPeer(ip); next != nil {
+				backend = next
 			}
 		}
 	}
 
 	durationMs := time.Since(start).Milliseconds()
-	reqLog.Error("request failed after retries", "method", r.Method, "path", r.URL.Path, "duration_ms", durationMs, "error", lastErr)
-	http.Error(w, fmt.Sprintf("Service temporarily unavailable: %v", lastErr), http.StatusServiceUnavailable)
+	reqLog.Error("request failed after retries",
+		"method", r.Method, "path", r.URL.Path, "host", r.Host,
+		"route", matched.Name, "duration_ms", durationMs, "error", lastErr)
+	http.Error(rec, fmt.Sprintf("Service temporarily unavailable: %v", lastErr), http.StatusServiceUnavailable)
 	requestsTotal.WithLabelValues(r.Method, r.URL.Path, "503").Inc()
 	if span != nil {
 		span.SetTag("error", true)
